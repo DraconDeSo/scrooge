@@ -1159,7 +1159,7 @@ $("s-quit").onclick = () => invoke("quit_app");
 // ---------------------------------------------------------------- updates
 function showUpdate(info) {
   state.update = info;
-  const has = !!info?.available;
+  const has = info?.status === "available";
   $("s-upd-row").classList.toggle("hidden", !has);
   if (has) {
     $("s-upd-version").textContent = `Version ${info.version} is available (you have ${info.current})`;
@@ -1174,7 +1174,12 @@ async function checkUpdates() {
   try {
     const info = await invoke("check_update");
     showUpdate(info);
-    $("s-upd-status").textContent = info.available ? "Update available." : `You are on the latest version (${info.current}).`;
+    const messages = {
+      available: "Update available.",
+      up_to_date: `You are on the latest version (${info.current}).`,
+      no_published_release: "No release has been published yet. Automatic updates will be available after the first release.",
+    };
+    $("s-upd-status").textContent = messages[info.status];
   } catch (err) {
     $("s-upd-status").textContent = "Update check failed: " + err;
   } finally {

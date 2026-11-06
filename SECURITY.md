@@ -36,7 +36,8 @@ with the patched crate compiled under optimization.
   Automatic billing is opt-in. Scrooge calls the configured provider's fixed HTTPS
   billing API for the selected dates and caches totals in memory. The Google Cloud
   adapter starts a BigQuery job under the configured byte limit. The update check
-  contacts `github.com` to download `latest.json` and signed installers.
+  contacts `github.com` to download `latest.json` and signed installers. If the feed
+  is unavailable, it can query the public release status on `api.github.com`.
 - **No token storage.** Scrooge reads credentials on demand and keeps them in memory
   for the request. Billing configuration stores credential names only. Google Cloud
   can obtain a temporary access token through the installed Google Cloud CLI.

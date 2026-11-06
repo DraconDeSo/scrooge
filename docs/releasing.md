@@ -63,5 +63,7 @@ enable `sign_platform` in that manual run to check Windows and macOS trust as we
 `src-tauri/tauri.conf.json` points the updater to
 `https://github.com/DraconDeSo/scrooge/releases/latest/download/latest.json`. That URL always
 resolves to the newest *published* (non-draft, non-prerelease) release, so publishing the
-draft is what rolls an update out. To withdraw a bad release, unpublish it (turn it back into
-a draft): clients then see the previous release as latest.
+draft is what rolls an update out. Before the first published release, the app reports that
+no release is available. If a release is published but its update feed is unavailable,
+the app reports an error. To withdraw a bad release, unpublish it (turn it back into a
+draft): clients then see the previous release as latest.
