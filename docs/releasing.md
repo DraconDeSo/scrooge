@@ -22,16 +22,24 @@ The updater only installs packages signed with the project's key.
 4. Keep a backup of the private key. If it is lost, existing installations can no longer
    update automatically (users must reinstall manually once).
 
-## Optional: OS code signing
+## OS code signing
 
-Unsigned builds work but trigger SmartScreen on Windows and Gatekeeper on macOS.
+Tagged releases require Windows Authenticode and macOS Developer ID signatures. The
+certificates must belong to the publisher or team. Add the credentials in the
+repository's Actions secrets.
 
-- **macOS**: add `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`,
-  `APPLE_SIGNING_IDENTITY`, and for notarization `APPLE_ID`, `APPLE_PASSWORD`
-  (app-specific password), `APPLE_TEAM_ID`. The workflow picks them up automatically.
-- **Windows**: configure `bundle.windows.certificateThumbprint` or a signing command
-  (e.g. Azure Trusted Signing) in `tauri.conf.json`; see the
-  [Tauri code-signing guide](https://v2.tauri.app/distribute/sign/windows/).
+- For macOS, use a [Developer ID Application certificate](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/).
+  Set `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD` and
+  `APPLE_SIGNING_IDENTITY`. For notarization also set `APPLE_ID`, `APPLE_PASSWORD`
+  (app-specific password) and `APPLE_TEAM_ID`.
+- For Windows, the certificate-store integration uses `WINDOWS_CERTIFICATE` (base64
+  .pfx) and `WINDOWS_CERTIFICATE_PASSWORD`. If the issuer keeps the private key in a
+  hardware or cloud signer, use its Tauri
+  [signing command integration](https://v2.tauri.app/distribute/sign/windows/).
+
+Run **Release** manually on `main` to build test artifacts and verify the updater
+signatures without a tag or GitHub release. Once platform credentials are configured,
+enable `sign_platform` in that manual run to check Windows and macOS trust as well.
 
 ## Release checklist
 
@@ -46,9 +54,9 @@ Unsigned builds work but trigger SmartScreen on Windows and Gatekeeper on macOS.
    git push origin main --tags
    ```
 
-5. Wait for the **Release** workflow, check the draft release (all installers +
-   `latest.json` present), then **Publish** it. Installed apps see the update on their next
-   check.
+5. Wait for the **Release** workflow to pass, including installer signature
+   verification. Check that the draft contains every installer and `latest.json`,
+   then **Publish** it. Installed apps see the update on their next check.
 
 ## How updates reach users
 

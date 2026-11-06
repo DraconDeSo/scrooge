@@ -1,6 +1,7 @@
 // Hide the console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod billing;
 mod claude_local;
 mod claude_usage;
 mod quota;
@@ -95,6 +96,8 @@ async fn get_usage_report(
     state: State<'_, AppState>,
     start: u64,
     end: u64,
+    billing_start: Option<u64>,
+    billing_end: Option<u64>,
 ) -> Result<usage::Report, String> {
     if start >= end {
         return Err("Choose a valid date range.".into());
@@ -102,7 +105,14 @@ async fn get_usage_report(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let settings = state.settings.lock().unwrap().clone();
-        state.usage.lock().unwrap().report(&settings, start, end)
+        let period = billing_start
+            .zip(billing_end)
+            .and_then(|(start, end)| billing::Period::new(start, end));
+        state
+            .usage
+            .lock()
+            .unwrap()
+            .report(&settings, start, end, period)
     })
     .await
     .map_err(|err| err.to_string())

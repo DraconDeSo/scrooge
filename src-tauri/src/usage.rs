@@ -1,6 +1,8 @@
 //! Historical consumption from local provider records. Chat text is discarded.
-use crate::{claude_local, settings::Settings};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use crate::billing::ChargeKind;
+use crate::{billing, billing::Charge, claude_local, settings::Settings};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
@@ -23,6 +25,7 @@ enum Source {
     OpenCode,
     Grok,
     Billing,
+    ProviderBilling,
 }
 
 impl Source {
@@ -36,7 +39,7 @@ impl Source {
             }
             Self::OpenCode => "opencode",
             Self::Grok => "grok",
-            Self::Billing => "",
+            Self::Billing | Self::ProviderBilling => "",
         }
     }
 }
@@ -67,20 +70,6 @@ impl Tokens {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-enum ChargeKind {
-    Api,
-    PlanExtra,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct Charge {
-    currency: String,
-    kind: ChargeKind,
-    amount_micros: i64,
-}
-
 #[derive(Debug)]
 struct Record {
     id: Option<String>,
@@ -103,20 +92,24 @@ struct Totals {
 impl Totals {
     fn record(&mut self, source: Source, record: &Record) {
         if let Some((_, charge)) = &record.billing {
-            if let Some(sum) = self
-                .charges
-                .iter_mut()
-                .find(|x| x.currency == charge.currency && x.kind == charge.kind)
-            {
-                sum.amount_micros = sum.amount_micros.saturating_add(charge.amount_micros);
-            } else {
-                self.charges.push(charge.clone());
-            }
+            self.add_charge(charge);
         } else if source == Source::GeminiApp {
             self.activities += 1;
         } else {
             self.requests += 1;
             self.tokens.add(record.tokens);
+        }
+    }
+
+    fn add_charge(&mut self, charge: &Charge) {
+        if let Some(sum) = self
+            .charges
+            .iter_mut()
+            .find(|x| x.currency == charge.currency && x.kind == charge.kind)
+        {
+            sum.amount_micros = sum.amount_micros.saturating_add(charge.amount_micros);
+        } else {
+            self.charges.push(charge.clone());
         }
     }
 }
@@ -169,6 +162,8 @@ struct Coverage {
     records_in_period: u64,
     readable: bool,
     supported: bool,
+    label: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -187,14 +182,27 @@ struct ParsedFile {
 #[derive(Default)]
 pub struct History {
     files: HashMap<PathBuf, ParsedFile>,
+    billing: billing::Sync,
 }
 
 impl History {
-    pub fn report(&mut self, settings: &Settings, start: u64, end: u64) -> Report {
+    pub fn report(
+        &mut self,
+        settings: &Settings,
+        start: u64,
+        end: u64,
+        billing_period: Option<billing::Period>,
+    ) -> Report {
         let mut groups: BTreeMap<Group, Totals> = BTreeMap::new();
         let mut coverage = Vec::new();
         let mut visited = HashSet::new();
         let mut projects = HashMap::new();
+        let synced = imports_dir()
+            .map(|dir| {
+                self.billing
+                    .report(&dir.join("billing-sources.json"), settings, billing_period)
+            })
+            .unwrap_or_default();
         for source in [
             Source::Claude,
             Source::Codex,
@@ -221,8 +229,11 @@ impl History {
                 records_in_period: 0,
                 readable: true,
                 supported: source != Source::Grok,
+                label: None,
+                detail: None,
             };
             let mut seen = HashSet::new();
+            let mut replaced_imports = 0;
             for path in files {
                 let Ok(meta) = path.metadata() else {
                     status.readable = false;
@@ -257,6 +268,12 @@ impl History {
                         .billing
                         .as_ref()
                         .map_or(source.provider(), |(provider, _)| provider);
+                    if record.billing.as_ref().is_some_and(|(_, charge)| {
+                        synced.replaces_import(provider, record.account.as_deref(), charge.kind)
+                    }) {
+                        replaced_imports += 1;
+                        continue;
+                    }
                     if !settings.provider_enabled(provider)
                         || record
                             .id
@@ -300,14 +317,70 @@ impl History {
                     status.readable = false;
                 }
             }
+            if replaced_imports > 0 {
+                status.detail = Some(format!(
+                    "{replaced_imports} imported rows superseded by connected billing"
+                ));
+            }
             coverage.push(status);
         }
         self.files.retain(|path, _| visited.contains(path));
+        if let Some(detail) = synced.status {
+            coverage.push(Coverage::billing("", None, detail.into()));
+        }
+        for connection in synced.connections {
+            let detail = match connection.result {
+                Ok(rows) => {
+                    let count = rows.len();
+                    for row in rows {
+                        let project = row.project.map(|path| {
+                            projects
+                                .entry(path.clone())
+                                .or_insert_with(|| project_root(&path))
+                                .clone()
+                        });
+                        groups
+                            .entry(Group {
+                                provider: connection.provider.into(),
+                                account: Some(connection.account.clone()),
+                                project,
+                                model: row.model,
+                                source: Source::ProviderBilling,
+                            })
+                            .or_default()
+                            .add_charge(&row.charge);
+                    }
+                    format!("{count} reported charge rows · UTC calendar dates")
+                }
+                Err(error) => error,
+            };
+            coverage.push(Coverage::billing(
+                connection.provider,
+                Some(format!("{} · {}", connection.label, connection.account)),
+                detail,
+            ));
+        }
         let rows = groups
             .into_iter()
             .map(|(group, totals)| Row { group, totals })
             .collect();
         Report { rows, coverage }
+    }
+}
+
+impl Coverage {
+    fn billing(provider: &'static str, label: Option<String>, detail: String) -> Self {
+        Self {
+            source: Source::ProviderBilling,
+            provider,
+            supported: true,
+            readable: true,
+            label,
+            detail: Some(detail),
+            files: 0,
+            earliest_ms: None,
+            records_in_period: 0,
+        }
     }
 }
 

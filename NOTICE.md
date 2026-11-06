@@ -30,6 +30,10 @@ Source archives and license files for these components are available on crates.i
 
 The source tag for each release contains the exact dependency versions in `Cargo.lock`.
 
+Linux builds use a [modified glib 0.18.5](vendor/glib-0.18.5/SCROOGE-BACKPORT.md).
+Its [license](vendor/glib-0.18.5/LICENSE) and [copyright](vendor/glib-0.18.5/COPYRIGHT)
+are included with the application.
+
 ## Trademarks
 
 Claude, Codex, OpenCode, GitHub Copilot, Gemini and Grok are trademarks of their respective

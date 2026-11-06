@@ -53,6 +53,47 @@ attribute the charge where the source provides a match. For a local project, set
 Scrooge reads these imports locally and shows billing as unavailable when none covers
 the selection.
 
+#### Automatic billing
+
+To sync billed usage, create `billing-sources.json` in the same folder. Include one
+entry per payer. Use unique account labels for the same provider and avoid overlapping
+scopes, such as a GitHub organization and the enterprise that pays for it.
+
+```json
+[
+  {"provider":"openai","account":"OpenAI work","key_env":"SCROOGE_BILLING_OPENAI"},
+  {"provider":"anthropic","account":"Claude Console","key_env":"SCROOGE_BILLING_ANTHROPIC"},
+  {"provider":"github","account":"Copilot work","owner":"example-org","scope":"organization","key_env":"SCROOGE_BILLING_GITHUB"},
+  {"provider":"xai","account":"Grok team","team_id":"your-team-id","key_env":"SCROOGE_BILLING_XAI"},
+  {"provider":"google","account":"Gemini API","query_project":"query-project","table":"export-project.billing.gcp_billing_export_v1_example","location":"EU","service_ids":["your-billing-service-id"],"maximum_bytes_billed":10000000}
+]
+```
+
+Set each named environment variable in the environment that launches Scrooge, then
+restart it. The JSON file contains credential names only. Keep just the entries for
+accounts you want to sync.
+
+| Provider | Credential and data |
+| --- | --- |
+| OpenAI | An organization Admin API key. Reads [organization costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) by project and line item. |
+| Anthropic | A Claude Console Admin API key. Reads the [Console cost report](https://platform.claude.com/docs/en/manage-claude/usage-cost-api) by workspace and model. |
+| GitHub Copilot | A token with access to [AI credit billing usage](https://docs.github.com/en/rest/billing/usage) for the configured `user`, `organization`, or `enterprise` payer. Shows net AI credit charges as plan extras. |
+| xAI | A management key with [billing access](https://docs.x.ai/developers/rest-api-reference/management/billing) to the configured team. Reads API spend in USD. |
+| Google Cloud | A [standard BigQuery billing export](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage). Install the Google Cloud CLI and run `gcloud auth application-default login` with BigQuery Job User on the query project and read access to the export. You can instead set `key_env` to the name of an OAuth access-token variable. Select the Gemini billing service IDs, optionally narrow by `sku_ids`, and set the byte limit for the BigQuery query. |
+
+Remote costs use UTC calendar days for a selection of up to 366 days. Scrooge caches
+reports for 15 minutes. Providers may post charges with a delay. Optional
+`project_paths` maps remote project or workspace IDs to local checkout paths.
+`model_names` can map OpenAI line items, xAI billing descriptions and Google Cloud SKU
+IDs to local model names. Costs with no model or project mapping remain unattributed.
+
+Use the same `account` label in a manual import and its automatic source. For a matching
+provider, account and charge type, a successful sync supersedes the manual import for
+the selected period. Token counts come from the usage sources listed separately in
+**Data sources**. Gemini Apps and Antigravity personal subscription history is limited
+to the data available in exports or local logs. A Google Cloud billing connection
+covers the selected Cloud services.
+
 ### Full screen
 
 A dashboard covering the current monitor. **Live sessions** shows these panels:
