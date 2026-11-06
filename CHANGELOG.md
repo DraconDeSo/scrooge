@@ -25,6 +25,10 @@ All notable changes to this project are documented here. The format follows
   provider colors, warning thresholds, provider visibility, sorting.
 - Disk usage per provider and storage location in the full-screen view.
 - Enable/disable each provider; disabled providers are not scanned and make no network calls.
+- Data Export modal (`E` shortcut and per-row quick-export buttons) with 5 presets (`Project tokens by provider`, `Provider usage statistics`, `Daily usage timeline`, `Quota & billing snapshot`, `Live sessions & storage`) in `CSV`, `JSON` and `Markdown`, live preview, clipboard copy and local file export.
+- Ultra-lightweight runtime mode: pauses WebView timers and IPC payloads when hidden in the system tray, caps snapshot arrays, interns historical usage strings (`Arc<str>`) and shares a single OS process table scan across collectors.
+- Cross-platform distribution via native installers (`.msi`, `.exe`, `.dmg`, `.deb`, `.rpm`, `.AppImage`), portable archives, PowerShell / POSIX one-liner installers, and manifests for Winget, Scoop, Chocolatey, Homebrew Cask, Arch AUR, Flatpak and Snapcraft.
+- Complete user manual (`docs/manual.md`) and updated high-resolution UI documentation screenshots.
 - Signed in-app updates from GitHub Releases.
 
 [Unreleased]: https://github.com/DraconDeSo/scrooge/compare/v0.1.0...HEAD

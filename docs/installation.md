@@ -1,22 +1,48 @@
 # Installation and updates
 
-Installers for every supported system are attached to each
-[GitHub Release](https://github.com/DraconDeSo/scrooge/releases/latest).
+Installers, portable archives and package-manager manifests for every supported system are attached to each
+[GitHub Release](https://github.com/DraconDeSo/scrooge/releases/latest) along with `SHA256SUMS.txt`.
 
-| System | Download | Notes |
+## Quick install (terminal one-liner)
+
+- **Windows (PowerShell)**:
+  ```powershell
+  irm https://raw.githubusercontent.com/DraconDeSo/scrooge/main/scripts/install.ps1 | iex
+  ```
+  *(Pass `-Portable` to extract the portable `.zip` into `%LOCALAPPDATA%\Programs\Scrooge` without running an installer).*
+
+- **macOS & Linux**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/DraconDeSo/scrooge/main/scripts/install.sh | sh
+  ```
+  *(Automatically selects `.dmg` on macOS, `.deb`/`.rpm` when `apt`/`dnf` is available on Linux, or installs the `.AppImage` to `~/.local/bin/scrooge`, verifying SHA-256 against `SHA256SUMS.txt`).*
+
+## Package managers
+
+| Platform | Manager | Command |
 | --- | --- | --- |
-| Windows 10 / 11 (x64) | `Scrooge_<version>_x64-setup.exe` | Recommended. Per-user install, no admin rights needed. |
-| Windows (managed) | `Scrooge_<version>_x64_en-US.msi` | For deployment tools (Intune, GPO, SCCM). |
-| macOS 11+ Apple silicon | `Scrooge_<version>_aarch64.dmg` | M1 and later. |
-| macOS 11+ Intel | `Scrooge_<version>_x64.dmg` | |
-| Debian / Ubuntu | `scrooge_<version>_amd64.deb` | `sudo apt install ./scrooge_<version>_amd64.deb` |
-| Fedora / openSUSE | `scrooge-<version>-1.x86_64.rpm` | `sudo dnf install ./scrooge-<version>-1.x86_64.rpm` |
-| Any Linux | `scrooge_<version>_amd64.AppImage` | `chmod +x` and run. Supports in-app updates. |
+| Windows | **Winget** | `winget install DraconDeSo.Scrooge` |
+| Windows | **Scoop** | `scoop install https://github.com/DraconDeSo/scrooge/releases/latest/download/scrooge.scoop.json` |
+| macOS | **Homebrew** | `brew install --cask https://github.com/DraconDeSo/scrooge/releases/latest/download/scrooge.rb` |
+| Arch Linux | **makepkg / AUR** | `curl -fsSLO https://github.com/DraconDeSo/scrooge/releases/latest/download/PKGBUILD && makepkg -si` |
+| Any (CLI TUI) | **Cargo** | `cargo install --git https://github.com/DraconDeSo/scrooge abtop` |
+
+## Direct downloads
+
+| System | Installer | Portable | Notes |
+| --- | --- | --- | --- |
+| Windows 10 / 11 (x64) | `Scrooge_<version>_x64-setup.exe` | `Scrooge_<version>_x64-portable.zip` | Recommended. Per-user install, no admin rights needed. |
+| Windows (managed) | `Scrooge_<version>_x64_en-US.msi` | `Scrooge_<version>_x64-portable.zip` | For deployment tools (Intune, GPO, SCCM). |
+| macOS 11+ Apple silicon | `Scrooge_<version>_aarch64.dmg` | `Scrooge_<version>_aarch64-portable.tar.gz` | M1 and later. |
+| macOS 11+ Intel | `Scrooge_<version>_x64.dmg` | `Scrooge_<version>_x64-portable.tar.gz` | |
+| Debian / Ubuntu | `scrooge_<version>_amd64.deb` | `scrooge_<version>_amd64-portable.tar.gz` | `sudo apt install ./scrooge_<version>_amd64.deb` |
+| Fedora / openSUSE | `scrooge-<version>-1.x86_64.rpm` | `scrooge_<version>_amd64-portable.tar.gz` | `sudo dnf install ./scrooge-<version>-1.x86_64.rpm` |
+| Any Linux | `scrooge_<version>_amd64.AppImage` | `scrooge_<version>_amd64-portable.tar.gz` | `chmod +x` and run. Supports in-app updates. |
 
 ## Windows
 
-1. Download and run the `-setup.exe`.
-2. If SmartScreen shows *"Windows protected your PC"* (unsigned builds), choose
+1. Download and run the `-setup.exe` (or run the PowerShell one-liner / Scoop / Winget).
+2. If SmartScreen shows *"Windows protected your PC"* (on builds without a paid Authenticode certificate), choose
    **More info → Run anyway**.
 3. Scrooge starts in the tray (bottom-right). Left-click the icon to show the panel.
 
@@ -25,8 +51,8 @@ it is missing.
 
 ## macOS
 
-1. Open the `.dmg` and drag **Scrooge** to **Applications**.
-2. On first launch of a build that is not notarized, macOS blocks it: right-click the app →
+1. Open the `.dmg` and drag **Scrooge** to **Applications** (or use `install.sh`, which clears the quarantine attribute automatically).
+2. On first launch of a build that is not notarized with a paid Apple Developer ID, macOS blocks it: right-click the app →
    **Open** → **Open**, or run `xattr -dr com.apple.quarantine /Applications/Scrooge.app`.
 3. The icon appears in the menu bar.
 
@@ -60,13 +86,13 @@ Scrooge updates itself from signed GitHub Releases.
 
 In-app updates work for the Windows installers, the macOS app and the Linux AppImage. The
 `.deb` and `.rpm` packages are updated by downloading and installing the new package (or
-through your package manager if you host a repository).
+through `install.sh` / your package manager).
 
 ## Uninstalling
 
-- **Windows**: Settings → Apps → Scrooge → Uninstall.
-- **macOS**: move `/Applications/Scrooge.app` to the Trash.
-- **Linux**: `sudo apt remove scrooge` / `sudo dnf remove scrooge`, or delete the AppImage.
+- **Windows**: Settings → Apps → Scrooge → Uninstall (or `scoop uninstall scrooge` / `winget uninstall DraconDeSo.Scrooge`).
+- **macOS**: move `/Applications/Scrooge.app` to the Trash (or `brew uninstall --cask scrooge`).
+- **Linux**: `sudo apt remove scrooge` / `sudo dnf remove scrooge`, or delete `~/.local/bin/scrooge`.
 
 To remove settings as well, delete the `scrooge` folder in the configuration directory
 listed above. Disable *Start with Windows/at login* first if you enabled it.

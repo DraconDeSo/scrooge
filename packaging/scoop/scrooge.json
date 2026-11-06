@@ -1,0 +1,35 @@
+{
+  "version": "0.1.0",
+  "description": "Desktop monitor for AI coding agents (Claude Code, Codex CLI, OpenCode, GitHub Copilot, Gemini CLI, Grok Build)",
+  "homepage": "https://github.com/DraconDeSo/scrooge",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/DraconDeSo/scrooge/releases/download/v0.1.0/Scrooge_0.1.0_x64-portable.zip",
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "bin": [
+    "scrooge.exe",
+    "abtop.exe"
+  ],
+  "shortcuts": [
+    [
+      "scrooge.exe",
+      "Scrooge"
+    ]
+  ],
+  "checkver": {
+    "github": "https://github.com/DraconDeSo/scrooge"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/DraconDeSo/scrooge/releases/download/v$version/Scrooge_$version_x64-portable.zip",
+        "hash": {
+          "url": "https://github.com/DraconDeSo/scrooge/releases/download/v$version/SHA256SUMS.txt"
+        }
+      }
+    }
+  }
+}

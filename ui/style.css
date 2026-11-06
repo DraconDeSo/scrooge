@@ -485,3 +485,35 @@ code { font-family: var(--mono); font-size: .92em; }
   .path-row { flex-wrap: wrap; }
   .path-row .pl { width: auto; }
 }
+
+/* --------------------------------------------------------------- export */
+.exp-open-btn { margin-left: auto; padding: 3px 10px; font-size: .95em; }
+.exp-row-btn { margin-left: 6px; font-size: .95em; padding: 1px 6px; border: 1px solid var(--line-2); background: var(--panel-3); color: var(--fg); }
+.exp-row-btn:hover { border-color: var(--link); color: var(--link); }
+.exp-card { height: min(680px, 100%); }
+.exp-body { display: flex; flex-direction: column; }
+.exp-desc { margin: -8px 0 12px; color: var(--dim); font-size: 12px; }
+.exp-select { max-width: 300px; min-width: 160px; }
+.exp-mini-actions { display: flex; gap: 6px; flex: none; }
+.exp-mini-actions .btn { padding: 2px 8px; font-size: 11px; }
+.exp-prov-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; padding: 4px 0 10px; }
+.exp-prov-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  background: var(--panel-3); border: 1px solid var(--line-2); border-left: 3px solid var(--pc);
+  border-radius: 6px; cursor: pointer; min-width: 0;
+}
+.exp-prov-item.off { opacity: .5; }
+.exp-prov-item input { accent-color: var(--link); flex: none; margin: 0; }
+.exp-prov-item .meta { min-width: 0; flex: 1; }
+.exp-prov-item .meta b { display: block; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exp-prov-item .meta small { display: block; color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exp-preview-wrap { flex: 1; min-height: 130px; display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.exp-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--dim); }
+.exp-summary b { color: var(--fg); }
+.exp-preview {
+  flex: 1; width: 100%; min-height: 110px; resize: none;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line-2);
+  border-radius: 7px; padding: 8px 10px; font: 11.5px/1.45 var(--mono);
+  user-select: text; white-space: pre; overflow: auto;
+}
+.exp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

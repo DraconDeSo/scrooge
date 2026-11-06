@@ -1,0 +1,27 @@
+name: scrooge
+base: core22
+version: '0.1.0'
+summary: Desktop monitor for AI coding agents
+description: |
+  Scrooge shows every AI coding agent running on your machine (Claude Code,
+  Codex CLI, OpenCode, GitHub Copilot, Gemini CLI, Grok Build): sessions,
+  read/written/cached tokens, context windows and quotas.
+grade: stable
+confinement: classic
+
+apps:
+  scrooge:
+    command: usr/bin/scrooge
+    desktop: usr/share/applications/Scrooge.desktop
+  abtop:
+    command: usr/bin/abtop
+
+parts:
+  scrooge:
+    plugin: dump
+    source: https://github.com/DraconDeSo/scrooge/releases/download/v0.1.0/scrooge_0.1.0_amd64.deb
+    source-type: deb
+    source-checksum: sha256/0000000000000000000000000000000000000000000000000000000000000000
+    stage-packages:
+      - libwebkit2gtk-4.1-0
+      - libayatana-appindicator3-1

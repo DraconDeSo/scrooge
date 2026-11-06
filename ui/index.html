@@ -52,6 +52,7 @@
           <label>Through <input id="usage-through" type="date" /></label>
         </div>
       </div>
+      <button type="button" class="btn exp-open-btn" id="btn-export" title="Export tokens, provider statistics, daily history or live snapshot">⤓ Export</button>
     </nav>
     <section class="panel p-usage" aria-label="Usage and billing">
       <div class="usage-head">
@@ -137,11 +138,11 @@
           <h3>General</h3>
           <div class="st-group">
             <div class="st-row">
-              <div><b>Start with Windows</b><small>Launch Scrooge when you sign in.</small></div>
+              <div><b id="s-autostart-title">Start with Windows</b><small>Launch Scrooge when you sign in.</small></div>
               <label class="sw"><input type="checkbox" id="s-autostart" /><i></i></label>
             </div>
             <div class="st-row">
-              <div><b>Stay in the tray at login</b><small>When started by Windows, don't open the panel.</small></div>
+              <div><b>Stay in the tray at login</b><small id="s-start-hidden-desc">When started by Windows, don't open the panel.</small></div>
               <label class="sw"><input type="checkbox" id="s-start-hidden" /><i></i></label>
             </div>
             <div class="st-row">
@@ -319,11 +320,105 @@
             <div class="st-row"><div><b>Keyboard</b></div></div>
             <div class="keys">
               <span><kbd>F</kbd> full screen</span><span><kbd>Esc</kbd> back / hide</span><span><kbd>R</kbd> refresh</span>
-              <span><kbd>S</kbd> settings</span><span><kbd>/</kbd> filter</span><span><kbd>↑</kbd><kbd>↓</kbd> select</span><span><kbd>Enter</kbd> expand</span>
+              <span><kbd>S</kbd> settings</span><span><kbd>E</kbd> export</span><span><kbd>/</kbd> filter</span><span><kbd>↑</kbd><kbd>↓</kbd> select</span><span><kbd>Enter</kbd> expand</span>
             </div>
           </div>
           <div class="st-group"><button class="btn danger" id="s-quit">Quit Scrooge</button></div>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- -------------------------------------------------------------- export -->
+  <div id="export-modal" class="settings hidden" role="dialog" aria-label="Export data">
+    <div class="st-card exp-card">
+      <nav class="st-nav" id="exp-nav">
+        <div class="st-title">Export data</div>
+        <button type="button" data-preset="project_tokens" class="on">Project tokens</button>
+        <button type="button" data-preset="provider_stats">Provider stats</button>
+        <button type="button" data-preset="daily_timeline">Daily timeline</button>
+        <button type="button" data-preset="billing_quota">Billing &amp; quotas</button>
+        <button type="button" data-preset="live_sessions">Live &amp; storage</button>
+      </nav>
+      <div class="st-body exp-body">
+        <button class="st-close" id="export-close" title="Close (Esc)">✕</button>
+        <h3 id="exp-heading">Export tokens by project</h3>
+        <p class="exp-desc" id="exp-desc">Select a project and choose which of the providers that worked on it to include.</p>
+
+        <div class="st-group" id="exp-period-group">
+          <div class="st-row">
+            <div><b>Period</b><small>Time window for historical token and billing records.</small></div>
+            <div class="usage-range">
+              <select id="exp-period">
+                <option value="today">Today</option>
+                <option value="7" selected>Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="365">Last 365 days</option>
+                <option value="custom">Custom dates</option>
+              </select>
+            </div>
+          </div>
+          <div class="st-row hidden" id="exp-dates-row">
+            <div><small>Inclusive local calendar dates.</small></div>
+            <div class="usage-dates">
+              <label>From <input id="exp-from" type="date" /></label>
+              <label>Through <input id="exp-through" type="date" /></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="st-group" id="exp-project-group">
+          <div class="st-row">
+            <div><b>Project</b><small id="exp-project-hint">Filter by a specific repository/folder or export all projects.</small></div>
+            <select id="exp-project" class="exp-select"></select>
+          </div>
+        </div>
+
+        <div class="st-group" id="exp-providers-group">
+          <div class="st-row">
+            <div>
+              <b id="exp-prov-title">Providers that worked on this project</b>
+              <small id="exp-prov-hint">Uncheck any provider you want to exclude from the export.</small>
+            </div>
+            <div class="exp-mini-actions">
+              <button type="button" class="btn" id="exp-prov-all">All</button>
+              <button type="button" class="btn" id="exp-prov-none">None</button>
+            </div>
+          </div>
+          <div id="exp-providers" class="exp-prov-list"></div>
+        </div>
+
+        <div class="st-group" id="exp-options-group">
+          <div class="st-row" id="exp-group-row">
+            <div><b>Grouping</b><small>Level of aggregation in the exported rows.</small></div>
+            <select id="exp-breakdown">
+              <option value="model">Detailed (project · provider · model · account)</option>
+              <option value="provider">By project &amp; provider</option>
+              <option value="summary">Summary totals (by project or provider)</option>
+            </select>
+          </div>
+          <div class="st-row">
+            <div><b>Format</b><small>CSV for spreadsheets, JSON for scripts, Markdown for reports.</small></div>
+            <div class="seg" id="exp-format">
+              <button type="button" data-fmt="csv" class="on">CSV</button>
+              <button type="button" data-fmt="json">JSON</button>
+              <button type="button" data-fmt="md">Markdown</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="exp-preview-wrap">
+          <div class="exp-summary" id="exp-summary"></div>
+          <textarea id="exp-preview" class="exp-preview" readonly spellcheck="false"></textarea>
+        </div>
+
+        <div class="exp-actions">
+          <button type="button" class="btn primary" id="exp-save">⤓ Save file</button>
+          <button type="button" class="btn" id="exp-copy">Copy to clipboard</button>
+          <button type="button" class="btn hidden" id="exp-reveal">Open in folder</button>
+          <span id="exp-status" class="usage-muted" role="status"></span>
+        </div>
       </div>
     </div>
   </div>

@@ -32,6 +32,7 @@ use std::time::{Duration, SystemTime};
 /// Gemini 2.x / 3.x models expose a 1M-token context window.
 const GEMINI_CONTEXT: u64 = 1_048_576;
 const RECENT: Duration = Duration::from_secs(24 * 3600);
+const MAX_READ_PER_TICK: u64 = 64 * 1024 * 1024;
 
 #[derive(Default, Clone, Copy)]
 struct Tok {
@@ -152,8 +153,16 @@ impl GeminiCollector {
                 }
             }
         }
-        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found.sort_by_key(|a| std::cmp::Reverse(a.0));
         found.into_iter().map(|(_, p)| p).collect()
+    }
+
+    fn chat_cwd(path: &Path) -> String {
+        path.parent()
+            .and_then(|c| c.parent())
+            .and_then(|d| fs::read_to_string(d.join(".project_root")).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
     }
 
     fn refresh(&mut self, path: &Path) {
@@ -172,8 +181,9 @@ impl GeminiCollector {
         if f.seek(SeekFrom::Start(st.offset)).is_err() {
             return;
         }
-        let mut buf = Vec::new();
-        if f.take(len - st.offset).read_to_end(&mut buf).is_err() {
+        let to_read = (len - st.offset).min(MAX_READ_PER_TICK);
+        let mut buf = Vec::with_capacity(to_read as usize);
+        if f.take(to_read).read_to_end(&mut buf).is_err() {
             return;
         }
         st.offset += buf.len() as u64;
@@ -343,18 +353,18 @@ impl AgentCollector for GeminiCollector {
             self.candidates = self.scan_chats();
             self.last_pids = pids.clone();
         }
-        let chosen: Vec<PathBuf> = self.candidates.iter().take(pids.len()).cloned().collect();
+        let pairs =
+            process::match_pids_by_cwd(&pids, &self.candidates, &shared.process_info, |p| {
+                Self::chat_cwd(p)
+            });
         let mut sessions = Vec::new();
-        for (path, pid) in chosen.iter().zip(pids.iter()) {
+        for (path, pid) in &pairs {
             self.refresh(path);
             let Some(st) = self.parsed.get(path) else {
                 continue;
             };
             let project_dir = path.parent().and_then(|c| c.parent());
-            let cwd = project_dir
-                .and_then(|d| fs::read_to_string(d.join(".project_root")).ok())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default();
+            let cwd = Self::chat_cwd(path);
             let project_name = process::last_path_segment(&cwd)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
@@ -443,7 +453,7 @@ impl AgentCollector for GeminiCollector {
                 config_root: super::abbrev_path(&self.root),
             });
         }
-        let keep: HashSet<&PathBuf> = chosen.iter().collect();
+        let keep: HashSet<&PathBuf> = pairs.iter().map(|(p, _)| p).collect();
         self.parsed.retain(|p, _| keep.contains(p));
         sessions
     }

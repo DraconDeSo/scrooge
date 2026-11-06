@@ -227,29 +227,13 @@ pub(crate) fn map_pid_to_rollouts(pids: &[u32]) -> HashMap<u32, Vec<PathBuf>> {
 
     #[cfg(target_os = "windows")]
     {
-        let Ok(mut sys) = sysinfo::System::new() else {
-            return map;
-        };
-        let pids_sys: Vec<sysinfo::Pid> = pids
-            .iter()
-            .copied()
-            .map(|p| sysinfo::Pid::from(p as usize))
-            .collect();
-        sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::Some(&pids_sys),
-            true,
-            sysinfo::ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always),
-        );
         for &pid_u32 in pids {
-            let pid = sysinfo::Pid::from(pid_u32 as usize);
-            if let Some(proc_) = sys.process(pid) {
-                if let Some(cwd) = proc_.cwd() {
-                    if let Ok(entries) = std::fs::read_dir(cwd) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if is_rollout_path(&p) {
-                                map.entry(pid_u32).or_default().push(p);
-                            }
+            if let Some(cwd) = process::get_process_cwd(pid_u32) {
+                if let Ok(entries) = std::fs::read_dir(&cwd) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if is_rollout_path(&p) {
+                            map.entry(pid_u32).or_default().push(p);
                         }
                     }
                 }

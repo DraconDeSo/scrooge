@@ -36,7 +36,7 @@ jobs:
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --workspace --all-targets --locked
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: UI syntax
         run: |
           node --check ui/app.js

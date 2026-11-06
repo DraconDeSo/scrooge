@@ -44,7 +44,10 @@ impl Period {
     pub fn new(start: u64, end: u64) -> Option<Self> {
         let tomorrow = (Utc::now().timestamp_millis().max(0) as u64 / DAY_MS + 1) * DAY_MS;
         let end = end.min(tomorrow);
-        (start < end && start % DAY_MS == 0 && end % DAY_MS == 0 && end - start <= 366 * DAY_MS)
+        (start < end
+            && start.is_multiple_of(DAY_MS)
+            && end.is_multiple_of(DAY_MS)
+            && end - start <= 366 * DAY_MS)
             .then_some(Self { start, end })
     }
 
@@ -562,7 +565,7 @@ impl Account {
                     "https://management-api.x.ai/v1/billing/teams/{team}/usage"
                 ))
                 .header("Authorization", format!("Bearer {key}"))
-                .send_json(&json!({
+                .send_json(json!({
                     "analyticsRequest": {
                         "timeRange": {
                             "startTime": format!("{start} 00:00:00"),

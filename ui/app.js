@@ -512,24 +512,28 @@ function detailHtml(s) {
 function renderSessions() {
   const list = visibleSessions();
   const box = $("sessions");
-  const keys = new Set(list.map(keyOf));
-  const top = box.getBoundingClientRect().top;
-  const anchor = box.scrollTop > 0 && [...box.children].find((card) =>
-    keys.has(card.dataset.k) && card.getBoundingClientRect().bottom > top);
-  const offset = anchor ? anchor.getBoundingClientRect().top : 0;
-  if (!list.length) {
-    const msg = !state.snap ? "collecting…" : state.filter ? "no match" : "No running agents. Start Claude Code, Codex, OpenCode or GitHub Copilot.";
-    box.innerHTML = `<div class="empty">${msg}</div>`;
-  } else {
-    box.innerHTML = list.map(cardHtml).join("");
-    if (anchor) {
-      const card = [...box.children].find((node) => node.dataset.k === anchor.dataset.k);
-      if (card) box.scrollTop += card.getBoundingClientRect().top - offset;
+  const sel = window.getSelection();
+  const compactSelecting = state.mode === "compact" && sel && sel.toString() && sel.anchorNode &&
+    box.contains(sel.anchorNode) && sel.anchorNode.parentElement?.closest(".det");
+  if (!compactSelecting) {
+    const keys = new Set(list.map(keyOf));
+    const top = box.getBoundingClientRect().top;
+    const anchor = box.scrollTop > 0 && [...box.children].find((card) =>
+      keys.has(card.dataset.k) && card.getBoundingClientRect().bottom > top);
+    const offset = anchor ? anchor.getBoundingClientRect().top : 0;
+    if (!list.length) {
+      const msg = !state.snap ? "collecting…" : state.filter ? "no match" : "No running agents. Start Claude Code, Codex, OpenCode or GitHub Copilot.";
+      box.innerHTML = `<div class="empty">${msg}</div>`;
+    } else {
+      box.innerHTML = list.map(cardHtml).join("");
+      if (anchor) {
+        const card = [...box.children].find((node) => node.dataset.k === anchor.dataset.k);
+        if (card) box.scrollTop += card.getBoundingClientRect().top - offset;
+      }
     }
   }
   if (state.mode === "full") {
     const det = $("detail");
-    const sel = window.getSelection();
     const selecting = sel && sel.toString() && det.contains(sel.anchorNode);
     if (!selecting) {
       const s = list.find((x) => keyOf(x) === state.selected) || list[0];
@@ -726,16 +730,26 @@ $("rate-legend").addEventListener("click", (e) => {
 });
 
 function render() {
+  if (document.hidden) { state.dirty = true; return; }
+  state.dirty = false;
   renderHeader();
   renderQuota();
   renderSessions();
   if (state.mode === "full") renderFullPanels();
 }
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.dirty) render();
+});
 
 // ------------------------------------------------------------------ data
 function onSnapshot(json) {
-  try { state.snap = typeof json === "string" ? JSON.parse(json) : json; } catch { return; }
-  if (!state.snap) return;
+  let next;
+  try { next = typeof json === "string" ? JSON.parse(json) : json; } catch { return; }
+  if (!next) return;
+  if (next.generated_at_ms && state.snap?.generated_at_ms && next.generated_at_ms <= state.snap.generated_at_ms) {
+    return;
+  }
+  state.snap = next;
   state.rate.push(currentRate());
   if (state.rate.length > RATE_POINTS) state.rate.shift();
   pushRatePoints();
@@ -760,6 +774,10 @@ function setOnTop(on) {
 
 // ------------------------------------------------------------ interaction
 const windowsPanel = /Windows/.test(navigator.userAgent);
+if (!windowsPanel) {
+  if ($("s-autostart-title")) $("s-autostart-title").textContent = "Start at login";
+  if ($("s-start-hidden-desc")) $("s-start-hidden-desc").textContent = "When started at login, don't open the panel.";
+}
 if (windowsPanel) {
   const bar = $("titlebar");
   // Bypass the native move loop so Windows Snap doesn't resize the widget.
@@ -841,6 +859,10 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.target.blur(); if (e.target.id === "filter") { e.target.value = ""; state.filter = ""; renderSessions(); } }
     return;
   }
+  if (typeof exportOpen === "function" && exportOpen()) {
+    if (e.key === "Escape") closeExportModal();
+    return;
+  }
   if (settingsOpen()) {
     if (e.key === "Escape") closeSettings();
     return;
@@ -851,6 +873,7 @@ document.addEventListener("keydown", (e) => {
     case "f": case "F": invoke("toggle_mode"); break;
     case "r": case "R": refreshWidget(); break;
     case "s": case "S": openSettings(); break;
+    case "e": case "E": if (typeof openExportModal === "function") openExportModal(); break;
     case "/": e.preventDefault(); $("filter").focus(); break;
     case "ArrowDown": case "j": moveSelection(1); break;
     case "ArrowUp": case "k": moveSelection(-1); break;

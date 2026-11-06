@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+PackageIdentifier: DraconDeSo.Scrooge
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: The Scrooge contributors
+PublisherUrl: https://github.com/DraconDeSo/scrooge
+PackageName: Scrooge
+PackageUrl: https://github.com/DraconDeSo/scrooge
+License: MIT
+LicenseUrl: https://github.com/DraconDeSo/scrooge/blob/main/LICENSE
+ShortDescription: Desktop monitor for AI coding agents
+Description: Scrooge shows every AI coding agent running on your machine (Claude Code, Codex CLI, OpenCode, GitHub Copilot, Gemini CLI, Grok Build) with sessions, tokens, context windows and quotas.
+Moniker: scrooge
+Tags:
+  - ai
+  - claude
+  - codex
+  - copilot
+  - gemini
+  - monitor
+  - developer-tools
+Installers:
+  - Architecture: x64
+    InstallerType: nullsoft
+    Scope: user
+    InstallerUrl: https://github.com/DraconDeSo/scrooge/releases/download/v0.1.0/Scrooge_0.1.0_x64-setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: singleton
+ManifestVersion: 1.6.0

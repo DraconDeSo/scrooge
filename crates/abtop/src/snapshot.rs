@@ -189,6 +189,43 @@ fn tail<T: Clone>(v: &[T], n: usize) -> Vec<T> {
     }
 }
 
+/// Cap a string to at most `max_chars` Unicode scalar values so bloated
+/// process command lines don't inflate the JSON snapshot payload.
+fn cap_str(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => {
+            let mut out = String::with_capacity(idx + 3);
+            out.push_str(&s[..idx]);
+            out.push('…');
+            out
+        }
+        None => s.to_string(),
+    }
+}
+
+/// Keep all port-owning child processes plus up to `max` total children,
+/// truncating each command string to keep the snapshot payload small.
+fn cap_children(children: &[ChildProcess], max: usize) -> Vec<ChildProcess> {
+    let trim = |c: &ChildProcess| ChildProcess {
+        pid: c.pid,
+        command: cap_str(&c.command, 200),
+        mem_kb: c.mem_kb,
+        port: c.port,
+    };
+    let mut out: Vec<ChildProcess> = children
+        .iter()
+        .filter(|c| c.port.is_some())
+        .map(trim)
+        .collect();
+    for c in children.iter().filter(|c| c.port.is_none()) {
+        if out.len() >= max {
+            break;
+        }
+        out.push(trim(c));
+    }
+    out
+}
+
 fn epoch_ms(t: SystemTime) -> Option<u64> {
     t.duration_since(UNIX_EPOCH)
         .ok()
@@ -235,7 +272,7 @@ impl App {
                 elapsed_secs: s.elapsed().as_secs(),
                 summary: self.session_summary(s),
                 current_task: s.current_tasks.last().cloned(),
-                children: s.children.clone(),
+                children: cap_children(&s.children, 16),
                 compaction_count: s.compaction_count,
                 token_history: tail(&s.token_history, 64),
                 subagents: tail(&s.subagents, 16)
@@ -246,7 +283,7 @@ impl App {
                         tokens: a.tokens,
                     })
                     .collect(),
-                tool_calls: tail(&s.tool_calls, 24)
+                tool_calls: tail(&s.tool_calls, 12)
                     .iter()
                     .map(|t| ToolCallView {
                         name: t.name.clone(),
@@ -289,7 +326,16 @@ impl App {
             interval_ms,
             sessions,
             rate_limits: self.rate_limits.clone(),
-            orphan_ports: self.orphan_ports.clone(),
+            orphan_ports: self
+                .orphan_ports
+                .iter()
+                .map(|o| OrphanPort {
+                    port: o.port,
+                    pid: o.pid,
+                    command: cap_str(&o.command, 200),
+                    project_name: o.project_name.clone(),
+                })
+                .collect(),
             mcp_servers,
         }
     }

@@ -119,6 +119,53 @@ async fn get_usage_report(
 }
 
 #[tauri::command]
+async fn get_usage_daily(
+    state: State<'_, AppState>,
+    start: u64,
+    end: u64,
+) -> Result<Vec<usage::DailyRow>, String> {
+    if start >= end {
+        return Err("Choose a valid date range.".into());
+    }
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = state.settings.lock().unwrap().clone();
+        state
+            .usage
+            .lock()
+            .unwrap()
+            .daily_report(&settings, start, end)
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn save_export(filename: String, content: String) -> Result<String, String> {
+    let safe_name: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe_name = safe_name.trim_matches('.');
+    if safe_name.is_empty() {
+        return Err("Invalid export filename.".into());
+    }
+    let dir = dirs::download_dir()
+        .or_else(|| settings::path()?.parent().map(|p| p.join("exports")))
+        .ok_or("Download directory unavailable.")?;
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let path = dir.join(safe_name);
+    std::fs::write(&path, content.as_bytes()).map_err(|err| err.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn open_usage_imports() -> Result<(), String> {
     let dir = usage::imports_dir().ok_or("Settings folder unavailable.")?;
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
@@ -461,6 +508,11 @@ fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("main")
 }
 
+fn is_window_visible(app: &AppHandle) -> bool {
+    main_window(app)
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+}
+
 fn save_compact_bounds(app: &AppHandle) {
     let state = app.state::<AppState>();
     if *state.mode.lock().unwrap() != Mode::Compact {
@@ -733,6 +785,9 @@ fn apply_mode_on(app: &AppHandle, mode: Mode, monitor: Option<Monitor>) {
     let _ = w.unminimize();
     let _ = w.set_focus();
     let _ = app.emit("mode", mode);
+    let snap = state.snapshot.lock().unwrap().clone();
+    let _ = app.emit("snapshot", snap);
+    let _ = state.refresh_tx.lock().unwrap().send(());
 }
 
 fn apply_always_on_top(app: &AppHandle, on: bool) {
@@ -857,12 +912,20 @@ fn spawn_monitor(app: AppHandle, state: AppState, rx: mpsc::Receiver<()>) {
                     monitor = build(&disabled);
                 }
                 monitor.tick_no_summaries();
+                let visible = is_window_visible(&app);
                 let snap = monitor.to_snapshot(tick.as_millis() as u64);
                 if let Ok(json) = serde_json::to_string(&snap) {
                     *state.snapshot.lock().unwrap() = json.clone();
-                    let _ = app.emit("snapshot", json);
+                    if visible {
+                        let _ = app.emit("snapshot", json);
+                    }
                 }
-                if !wait(&rx, tick) {
+                let sleep_for = if visible {
+                    tick
+                } else {
+                    tick.max(Duration::from_secs(10))
+                };
+                if !wait(&rx, sleep_for) {
                     break;
                 }
             }
@@ -1062,6 +1125,8 @@ fn main() {
             get_claude_local,
             get_storage,
             get_usage_report,
+            get_usage_daily,
+            save_export,
             open_usage_imports,
             refresh_storage,
             refresh,

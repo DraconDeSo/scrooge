@@ -241,9 +241,9 @@ pub fn scan(enabled: impl Fn(&str) -> bool) -> StorageReport {
         }
     }
     for p in &mut providers {
-        p.locations.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        p.locations.sort_by_key(|a| std::cmp::Reverse(a.bytes));
     }
-    providers.sort_by(|a, b| b.total_bytes.cmp(&a.total_bytes));
+    providers.sort_by_key(|a| std::cmp::Reverse(a.total_bytes));
     StorageReport {
         providers,
         computed_at_ms: std::time::SystemTime::now()

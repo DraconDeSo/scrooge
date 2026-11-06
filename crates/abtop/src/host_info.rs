@@ -167,21 +167,13 @@ mod windows_impl {
     /// delta between two refreshes, so a freshly constructed `System` always
     /// reports 0. The collector tick (~2s) is well above
     /// `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`.
+    #[derive(Default)]
     pub struct WinSampler {
         sys: Option<System>,
         /// False until the first refresh has happened; the first sample has
         /// no CPU delta yet, so report 0.0 (mirrors the Linux first-tick
         /// behavior where `prev` is `None`).
         primed: bool,
-    }
-
-    impl Default for WinSampler {
-        fn default() -> Self {
-            Self {
-                sys: None,
-                primed: false,
-            }
-        }
     }
 
     impl std::fmt::Debug for WinSampler {

@@ -47,14 +47,48 @@
 
 ## Install
 
-Download the installer for your system from the
+### Quick install (one-liner)
+
+- **Windows (PowerShell)**:
+  ```powershell
+  irm https://raw.githubusercontent.com/DraconDeSo/scrooge/main/scripts/install.ps1 | iex
+  ```
+- **macOS & Linux**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/DraconDeSo/scrooge/main/scripts/install.sh | sh
+  ```
+
+### Package managers
+
+- **Windows (Winget / Scoop)**:
+  ```powershell
+  winget install DraconDeSo.Scrooge
+  # or via Scoop:
+  scoop install https://github.com/DraconDeSo/scrooge/releases/latest/download/scrooge.scoop.json
+  ```
+- **macOS (Homebrew Cask)**:
+  ```bash
+  brew install --cask https://github.com/DraconDeSo/scrooge/releases/latest/download/scrooge.rb
+  ```
+- **Arch Linux (AUR / PKGBUILD)**:
+  ```bash
+  curl -fsSLO https://github.com/DraconDeSo/scrooge/releases/latest/download/PKGBUILD && makepkg -si
+  ```
+- **Standalone terminal TUI (`abtop`) via Cargo**:
+  ```bash
+  cargo install --git https://github.com/DraconDeSo/scrooge abtop
+  ```
+
+### Direct downloads
+
+Or download the installer or portable archive for your system from the
 [latest release](https://github.com/DraconDeSo/scrooge/releases/latest):
 
-| System | File |
-| --- | --- |
-| Windows 10/11 | `Scrooge_<version>_x64-setup.exe` (or `.msi` for managed deployment) |
-| macOS (Apple silicon / Intel) | `Scrooge_<version>_aarch64.dmg` / `Scrooge_<version>_x64.dmg` |
-| Linux | `.deb`, `.rpm` or `.AppImage` |
+| System | Installer | Portable archive |
+| --- | --- | --- |
+| Windows 10/11 | `Scrooge_<version>_x64-setup.exe` (or `.msi` for managed deployment) | `Scrooge_<version>_x64-portable.zip` |
+| macOS (Apple silicon / Intel) | `Scrooge_<version>_aarch64.dmg` / `Scrooge_<version>_x64.dmg` | `Scrooge_<version>_<arch>-portable.tar.gz` |
+| Linux | `.deb`, `.rpm` or `.AppImage` | `scrooge_<version>_amd64-portable.tar.gz` |
 
 Details, first-run notes for unsigned builds and the update procedure:
 **[docs/installation.md](docs/installation.md)**.
@@ -73,8 +107,9 @@ See [Updating](docs/installation.md#updating).
 
 | Guide | |
 | --- | --- |
+| [User manual](docs/manual.md) | Complete guide to views, quotas, billing and data exports |
 | [Installation and updates](docs/installation.md) | Installers, first run, updates, uninstall |
-| [Using Scrooge](docs/usage.md) | Views, tray, keyboard shortcuts, statuses |
+| [Using Scrooge](docs/usage.md) | Views, tray, keyboard shortcuts, exports, statuses |
 | [Configuration](docs/configuration.md) | Every setting, config files, environment variables |
 | [Providers and data sources](docs/providers.md) | What is read for each agent and how |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems |

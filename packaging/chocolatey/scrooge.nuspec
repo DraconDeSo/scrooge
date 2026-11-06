@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>scrooge</id>
+    <version>0.1.0</version>
+    <title>Scrooge</title>
+    <authors>The Scrooge contributors</authors>
+    <projectUrl>https://github.com/DraconDeSo/scrooge</projectUrl>
+    <licenseUrl>https://github.com/DraconDeSo/scrooge/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/DraconDeSo/scrooge</projectSourceUrl>
+    <docsUrl>https://github.com/DraconDeSo/scrooge/tree/main/docs</docsUrl>
+    <bugTrackerUrl>https://github.com/DraconDeSo/scrooge/issues</bugTrackerUrl>
+    <tags>scrooge ai claude codex copilot gemini monitor developer-tools</tags>
+    <summary>Desktop monitor for AI coding agents</summary>
+    <description>Scrooge shows every AI coding agent running on your machine (Claude Code, Codex CLI, OpenCode, GitHub Copilot, Gemini CLI, Grok Build) with sessions, tokens, context windows and quotas.</description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

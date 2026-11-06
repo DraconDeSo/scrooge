@@ -1,14 +1,43 @@
 # Releasing
 
-Releases are built by GitHub Actions ([`.github/workflows/release.yml`](../.github/workflows/release.yml))
-for Windows (x64), macOS (Apple silicon and Intel) and Linux (x64), and published as a
-**draft** GitHub Release together with `latest.json`, the manifest the in-app updater reads.
+Releases are built automatically by GitHub Actions ([`.github/workflows/release.yml`](../.github/workflows/release.yml))
+for Windows (x64), macOS (Apple silicon and Intel) and Linux (x64).
 
-## One-time setup: update-signing key
+When a branch is merged into `main` with a version in `package.json` + `src-tauri/Cargo.toml`
+that has not been published yet (or when triggered manually / via a `v*` tag):
 
-The updater only installs packages signed with the project's key.
+1. **`preflight`** checks that `package.json` and `src-tauri/Cargo.toml` have the same version
+   and checks whether `v<version>` is already published on GitHub. (If `v<version>` is already
+   published, normal commits on `main` skip the release build automatically.)
+2. **`build`** compiles all 4 OS targets (`Windows x64`, `macOS Apple silicon`, `macOS Intel`,
+   `Linux x64`), builds the standalone `abtop` CLI, packages portable archives (`.zip` / `.tar.gz`),
+   and uploads all installers + `latest.json` to a **Draft GitHub Release** (`v<version>`).
+3. **`verify`** checks all bundle types, verifies the Minisign updater signatures against
+   `tauri.conf.json`, generates `SHA256SUMS.txt` and auto-updates the package manager manifests
+   (`scrooge.scoop.json`, `DraconDeSo.Scrooge.winget.yaml`, `scrooge.rb`, `PKGBUILD`), attaching
+   them to the Draft Release.
+4. **`publish`** waits for approval on the `release` GitHub Environment (if configured) and
+   publishes the Draft Release live with one click.
 
-1. Generate a key pair (keep the password):
+## Setting up the 1-click Approval Gate on GitHub
+
+To require manual approval before a Draft Release goes live after merging into `main`:
+
+1. Open your GitHub repository → **Settings → Environments**.
+2. Create an environment named **`release`**.
+3. Check **Required reviewers** and add your GitHub account.
+
+Now, whenever a PR bumping the version is merged into `main`, GitHub Actions builds and
+verifies all artifacts into a Draft Release and pauses at **`Approve & publish release`**,
+letting you inspect the draft and click **Approve and deploy** (or publish directly from
+the **Releases** tab).
+
+## Free updater signing key (`TAURI_SIGNING_PRIVATE_KEY`)
+
+Tauri's in-app updater uses **Minisign** (100% free, local Ed25519 key pair) so the app only
+installs updates signed by your repository:
+
+1. Generate a key pair locally (free):
 
    ```bash
    npx tauri signer generate -w ~/.tauri/scrooge.key
@@ -18,52 +47,29 @@ The updater only installs packages signed with the project's key.
    `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`, and commit it.
 3. Add two repository secrets (*Settings → Secrets and variables → Actions*):
    - `TAURI_SIGNING_PRIVATE_KEY` — contents of `~/.tauri/scrooge.key`
-   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — its password
-4. Keep a backup of the private key. If it is lost, existing installations can no longer
-   update automatically (users must reinstall manually once).
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — its password (if set)
 
-## OS code signing
+## Optional OS code signing (Windows Authenticode & Apple Developer ID)
 
-Tagged releases require Windows Authenticode and macOS Developer ID signatures. The
-certificates must belong to the publisher or team. Add the credentials in the
-repository's Actions secrets.
+OS-level code signing is **completely optional**. If the secrets below are not configured,
+the workflow still builds, signs updater bundles with Minisign, and publishes the release
+for free (users simply click *More info → Run anyway* on Windows SmartScreen or right-click
+*Open* on macOS on their very first install).
 
-- For macOS, use a [Developer ID Application certificate](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/).
-  Set `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD` and
-  `APPLE_SIGNING_IDENTITY`. For notarization also set `APPLE_ID`, `APPLE_PASSWORD`
-  (app-specific password) and `APPLE_TEAM_ID`.
-- For Windows, the certificate-store integration uses `WINDOWS_CERTIFICATE` (base64
-  .pfx) and `WINDOWS_CERTIFICATE_PASSWORD`. If the issuer keeps the private key in a
-  hardware or cloud signer, use its Tauri
-  [signing command integration](https://v2.tauri.app/distribute/sign/windows/).
+If you later obtain OS certificates, add their secrets in *Settings → Secrets and variables → Actions*
+and the pipeline will enable them automatically:
 
-Run **Release** manually on `main` to build test artifacts and verify the updater
-signatures without a tag or GitHub release. Once platform credentials are configured,
-enable `sign_platform` in that manual run to check Windows and macOS trust as well.
+- **Windows**: `WINDOWS_CERTIFICATE` (base64 `.pfx`) and `WINDOWS_CERTIFICATE_PASSWORD`.
+- **macOS**: `APPLE_CERTIFICATE` (base64 `.p12`), `APPLE_CERTIFICATE_PASSWORD`,
+  `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific password) and
+  `APPLE_TEAM_ID`.
 
-## Release checklist
+## Release workflow (step-by-step)
 
-1. Update `CHANGELOG.md`: move **Unreleased** entries under the new version.
-2. Bump the version in `package.json` and `src-tauri/Cargo.toml` (same value), then run
-   `cargo check` so `Cargo.lock` is updated.
-3. Commit: `chore: release vX.Y.Z`.
-4. Tag and push:
-
-   ```bash
-   git tag -a vX.Y.Z -m "vX.Y.Z"
-   git push origin main --tags
-   ```
-
-5. Wait for the **Release** workflow to pass, including installer signature
-   verification. Check that the draft contains every installer and `latest.json`,
-   then **Publish** it. Installed apps see the update on their next check.
-
-## How updates reach users
-
-`src-tauri/tauri.conf.json` points the updater to
-`https://github.com/DraconDeSo/scrooge/releases/latest/download/latest.json`. That URL always
-resolves to the newest *published* (non-draft, non-prerelease) release, so publishing the
-draft is what rolls an update out. Before the first published release, the app reports that
-no release is available. If a release is published but its update feed is unavailable,
-the app reports an error. To withdraw a bad release, unpublish it (turn it back into a
-draft): clients then see the previous release as latest.
+1. In your feature/release branch, update `CHANGELOG.md` and bump `version` in both
+   `package.json` and `src-tauri/Cargo.toml` (run `cargo check` so `Cargo.lock` updates).
+2. Open a PR and **merge into `main`**.
+3. The **Release** workflow builds all platforms, verifies signatures, generates
+   `SHA256SUMS.txt` and package manifests, and prepares the Draft Release `vX.Y.Z`.
+4. Approve the `release` environment deployment in GitHub Actions (or click **Publish release**
+   on the Draft Release in GitHub).

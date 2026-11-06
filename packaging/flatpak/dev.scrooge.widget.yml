@@ -1,0 +1,26 @@
+app-id: dev.scrooge.widget
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: scrooge
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --share=network
+  - --filesystem=home:ro
+  - --filesystem=xdg-config/scrooge:create
+  - --talk-name=org.kde.StatusNotifierWatcher
+modules:
+  - name: scrooge
+    buildsystem: simple
+    build-commands:
+      - ar x scrooge.deb
+      - tar -xf data.tar.*
+      - cp -r usr/* /app/
+    sources:
+      - type: file
+        only-arches: [x86_64]
+        url: https://github.com/DraconDeSo/scrooge/releases/download/v0.1.0/scrooge_0.1.0_amd64.deb
+        sha256: 0000000000000000000000000000000000000000000000000000000000000000
+        dest-filename: scrooge.deb

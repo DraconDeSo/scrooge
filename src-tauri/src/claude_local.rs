@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const WEEK_MS: u64 = 7 * 24 * 3600 * 1000;
 const FIVE_H_MS: u64 = 5 * 3600 * 1000;
 const DAY_MS: u64 = 24 * 3600 * 1000;
+const MAX_READ_PER_TICK: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct Event {
@@ -72,7 +73,7 @@ struct FileState {
 pub struct ClaudeLocalScanner {
     files: HashMap<PathBuf, FileState>,
     events: Vec<Event>,
-    seen: HashSet<String>,
+    seen: HashMap<String, u64>,
     models: Vec<String>,
 }
 
@@ -140,7 +141,7 @@ impl ClaudeLocalScanner {
         Self {
             files: HashMap::new(),
             events: Vec::new(),
-            seen: HashSet::new(),
+            seen: HashMap::new(),
             models: Vec::new(),
         }
     }
@@ -182,7 +183,7 @@ impl ClaudeLocalScanner {
             msg["id"].as_str().unwrap_or(""),
             v["requestId"].as_str().unwrap_or("")
         );
-        if key != ":" && !self.seen.insert(key) {
+        if key != ":" && self.seen.insert(key, ts_ms).is_some() {
             return;
         }
         let model = msg["model"].as_str().unwrap_or("unknown");
@@ -217,8 +218,9 @@ impl ClaudeLocalScanner {
         if f.seek(SeekFrom::Start(offset)).is_err() {
             return;
         }
-        let mut buf = Vec::with_capacity((len - offset) as usize);
-        if f.take(len - offset).read_to_end(&mut buf).is_err() {
+        let to_read = (len - offset).min(MAX_READ_PER_TICK);
+        let mut buf = Vec::with_capacity(to_read as usize);
+        if f.take(to_read).read_to_end(&mut buf).is_err() {
             return;
         }
         let mut text = partial;
@@ -265,6 +267,7 @@ impl ClaudeLocalScanner {
         let live: HashSet<&PathBuf> = files.iter().collect();
         self.files.retain(|p, _| live.contains(p));
         self.events.retain(|e| e.ts_ms >= min_ts);
+        self.seen.retain(|_, &mut ts| ts >= min_ts);
         self.events.sort_by_key(|e| e.ts_ms);
 
         let mut out = ClaudeLocal {
@@ -326,7 +329,7 @@ impl ClaudeLocalScanner {
             }
         }
         let mut models: Vec<ModelTotals> = per_model.into_values().collect();
-        models.sort_by(|a, b| b.total.cmp(&a.total));
+        models.sort_by_key(|a| std::cmp::Reverse(a.total));
         out.models = models;
         out
     }
@@ -371,5 +374,17 @@ mod tests {
             .map(|e| e.output)
             .sum();
         assert_eq!(five, 50);
+    }
+
+    #[test]
+    fn prunes_stale_seen_keys_beyond_week_window() {
+        let mut s = ClaudeLocalScanner::new();
+        let now = now_ms();
+        let min_ts = now.saturating_sub(WEEK_MS);
+        s.seen.insert("stale:req".into(), min_ts.saturating_sub(1));
+        s.seen.insert("fresh:req".into(), min_ts);
+        s.seen.retain(|_, &mut ts| ts >= min_ts);
+        assert!(!s.seen.contains_key("stale:req"));
+        assert!(s.seen.contains_key("fresh:req"));
     }
 }

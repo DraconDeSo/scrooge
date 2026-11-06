@@ -1,47 +1,51 @@
 name: Release
 
-# Push a tag like `v0.2.0` to build installers for every OS, sign the update
-# packages and publish them (plus `latest.json` for the in-app updater) to a
-# draft GitHub Release. Review the draft, then publish it.
+# Automatically builds a Draft GitHub Release when a branch is merged into
+# `main` with a version in `package.json` that has not been published yet
+# (or when a `v*` tag is pushed / triggered manually).
+#
+# Configure a required reviewer on the `release` GitHub Environment
+# (Settings -> Environments -> release -> Required reviewers) so the final
+# `publish` job waits for your 1-click approval before making the download live.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       sign_platform:
-        description: Verify with Windows Authenticode and macOS Developer ID
+        description: Verify with Windows Authenticode and macOS Developer ID (if configured)
         type: boolean
         default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
   preflight:
-    if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
+    name: Check release version & signing keys
     runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      has_updater_key: ${{ steps.check.outputs.has_updater_key }}
+      sign_windows: ${{ steps.check.outputs.sign_windows }}
+      sign_macos: ${{ steps.check.outputs.sign_macos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check updater key and tag
+
+      - name: Determine release state and available credentials
+        id: check
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::Configure TAURI_SIGNING_PRIVATE_KEY to sign the updater bundles."
-            exit 1
-          fi
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            version=$(node -p "require('./package.json').version")
-            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-              echo "::error::The tag must match the version in package.json."
-              exit 1
-            fi
-          fi
-      - name: Check platform signing credentials
-        if: github.ref_type == 'tag' || inputs.sign_platform
-        env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -51,18 +55,61 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          failed=0
-          for secret in WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!secret}" ]; then
-              echo "::error::Missing platform signing secret $secret"
-              failed=1
+          version=$(node -p "require('./package.json').version")
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::package.json version ($version) does not match src-tauri/Cargo.toml ($cargo_version)."
+            exit 1
+          fi
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "::error::The git tag ($GITHUB_REF_NAME) must match package.json ($tag)."
+            exit 1
+          fi
+
+          should_release=true
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            is_draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo "missing")
+            if [ "$is_draft" = "false" ]; then
+              echo "Release $tag is already published; skipping build."
+              should_release=false
             fi
-          done
-          exit "$failed"
+          fi
+
+          has_updater_key=false
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            has_updater_key=true
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not set; building installers without in-app updater signatures."
+          fi
+
+          sign_windows=false
+          if [ -n "$WINDOWS_CERTIFICATE" ] && [ -n "$WINDOWS_CERTIFICATE_PASSWORD" ]; then
+            sign_windows=true
+          else
+            echo "::notice::Windows Authenticode certificate not configured; building unsigned Windows installers (free)."
+          fi
+
+          sign_macos=false
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            sign_macos=true
+          else
+            echo "::notice::Apple Developer ID certificate not configured; building ad-hoc macOS bundles (free)."
+          fi
+
+          {
+            echo "should_release=$should_release"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "has_updater_key=$has_updater_key"
+            echo "sign_windows=$sign_windows"
+            echo "sign_macos=$sign_macos"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.name }})
     needs: preflight
+    if: needs.preflight.outputs.should_release == 'true'
     permissions:
       contents: write
     strategy:
@@ -72,15 +119,19 @@ jobs:
           - name: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            arch_label: x64
           - name: macOS Apple silicon
             os: macos-latest
             target: aarch64-apple-darwin
+            arch_label: aarch64
           - name: macOS Intel
             os: macos-latest
             target: x86_64-apple-darwin
+            arch_label: x64
           - name: Linux x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            arch_label: amd64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -109,68 +160,82 @@ jobs:
       - name: Install frontend tooling
         run: npm ci
 
-      - name: Configure Windows certificate
-        if: runner.os == 'Windows' && (github.ref_type == 'tag' || inputs.sign_platform)
-        id: windows-signing
+      - name: Prepare Tauri build config
+        id: tauri-config
         shell: pwsh
         env:
+          HAS_UPDATER_KEY: ${{ needs.preflight.outputs.has_updater_key }}
+          SIGN_WINDOWS: ${{ needs.preflight.outputs.sign_windows }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $pfx = Join-Path $env:RUNNER_TEMP 'scrooge-signing.pfx'
-          try {
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-            $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation 'Cert:\CurrentUser\My' -Password $password |
-              Where-Object HasPrivateKey | Select-Object -First 1
-            if (!$certificate) { throw 'The Windows certificate has no private key.' }
-            $config = Join-Path $env:RUNNER_TEMP 'scrooge-signing.json'
-            @{
-              bundle = @{ windows = @{
+          $override = @{ bundle = @{} }
+          if ($env:HAS_UPDATER_KEY -ne 'true') {
+            $override.bundle.createUpdaterArtifacts = $false
+          }
+          if ($IsWindows -and $env:SIGN_WINDOWS -eq 'true') {
+            $pfx = Join-Path $env:RUNNER_TEMP 'scrooge-signing.pfx'
+            try {
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+              $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+              $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation 'Cert:\CurrentUser\My' -Password $password |
+                Where-Object HasPrivateKey | Select-Object -First 1
+              if (!$certificate) { throw 'The Windows certificate has no private key.' }
+              $override.bundle.windows = @{
                 certificateThumbprint = $certificate.Thumbprint
                 digestAlgorithm = 'sha256'
                 timestampUrl = 'http://timestamp.digicert.com'
                 tsp = $true
-              } }
-            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $config -Encoding utf8
+              }
+            } finally {
+              if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx }
+            }
+          }
+          if ($override.bundle.Count -gt 0) {
+            $config = Join-Path $env:RUNNER_TEMP 'scrooge-override.json'
+            $override | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $config -Encoding utf8
             $configPath = $config.Replace('\', '/')
             "args=--config `"$configPath`"" >> $env:GITHUB_OUTPUT
-          } finally {
-            if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx }
+          } else {
+            "args=" >> $env:GITHUB_OUTPUT
           }
 
-      - name: Build, sign and upload
-        if: runner.os != 'macOS' || (github.ref_type != 'tag' && !inputs.sign_platform)
+      - name: Build, sign and upload (standard)
+        if: runner.os != 'macOS' || needs.preflight.outputs.sign_macos != 'true'
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Update-signing key (see docs/releasing.md). Required.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with: &release_build
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: ${{ github.ref_type == 'tag' && format('Scrooge {0}', github.ref_name) || '' }}
+          tagName: ${{ needs.preflight.outputs.tag }}
+          releaseName: Scrooge ${{ needs.preflight.outputs.tag }}
           releaseBody: |
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for what changed.
 
-            | System | File |
-            | --- | --- |
-            | Windows 10/11 (x64) | `Scrooge_*_x64-setup.exe` (recommended) or `.msi` |
-            | macOS Apple silicon | `Scrooge_*_aarch64.dmg` |
-            | macOS Intel | `Scrooge_*_x64.dmg` |
-            | Linux (Debian/Ubuntu) | `.deb` |
-            | Linux (Fedora/openSUSE) | `.rpm` |
-            | Linux (any) | `.AppImage` |
+            ### Quick install
+            - **Windows (PowerShell)**: `irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex`
+            - **macOS / Linux**: `curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | sh`
 
-            Installed copies update themselves from this release.
+            ### Direct downloads
+            | System | Installer | Portable |
+            | --- | --- | --- |
+            | Windows 10/11 (x64) | `Scrooge_*_x64-setup.exe` (recommended) or `.msi` | `Scrooge_*_x64-portable.zip` |
+            | macOS Apple silicon | `Scrooge_*_aarch64.dmg` | `Scrooge_*_aarch64-portable.tar.gz` |
+            | macOS Intel | `Scrooge_*_x64.dmg` | `Scrooge_*_x64-portable.tar.gz` |
+            | Linux (Debian/Ubuntu) | `scrooge_*_amd64.deb` | `scrooge_*_amd64-portable.tar.gz` |
+            | Linux (Fedora/openSUSE) | `scrooge-*.x86_64.rpm` | `scrooge_*_amd64-portable.tar.gz` |
+            | Linux (any) | `scrooge_*_amd64.AppImage` | `scrooge_*_amd64-portable.tar.gz` |
+
+            Checksums for all files are in `SHA256SUMS.txt`. Installed copies update themselves automatically from this release.
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: ${{ github.ref_type == 'tag' }}
-          args: --target ${{ matrix.target }} ${{ steps.windows-signing.outputs.args }}
+          uploadUpdaterJson: ${{ needs.preflight.outputs.has_updater_key == 'true' }}
+          args: --target ${{ matrix.target }} ${{ steps.tauri-config.outputs.args }}
 
-      - name: Build, sign and notarize with Developer ID
-        if: runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform)
+      - name: Build, sign and notarize with Developer ID (macOS)
+        if: runner.os == 'macOS' && needs.preflight.outputs.sign_macos == 'true'
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -184,8 +249,41 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with: *release_build
 
+      - name: Build standalone CLI (abtop) and package portable archive
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          ARCH_LABEL: ${{ matrix.arch_label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --release -p abtop --target $env:TARGET
+          $relDir = "target/$env:TARGET/release"
+          $portableDir = "$relDir/bundle/portable"
+          $stageDir = Join-Path $env:RUNNER_TEMP "scrooge-portable"
+          New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+          Copy-Item "LICENSE" -Destination $stageDir
+          Copy-Item "README.md" -Destination $stageDir
+          if ($IsWindows) {
+            Copy-Item "$relDir/scrooge.exe" -Destination $stageDir
+            Copy-Item "$relDir/abtop.exe" -Destination $stageDir
+            $zipPath = "$portableDir/Scrooge_${env:VERSION}_${env:ARCH_LABEL}-portable.zip"
+            Compress-Archive -Path "$stageDir/*" -DestinationPath $zipPath -Force
+          } elseif ($IsMacOS) {
+            Copy-Item "$relDir/bundle/macos/Scrooge.app" -Destination $stageDir -Recurse
+            Copy-Item "$relDir/abtop" -Destination $stageDir
+            $tarPath = "$portableDir/Scrooge_${env:VERSION}_${env:ARCH_LABEL}-portable.tar.gz"
+            tar -czf $tarPath -C $stageDir .
+          } else {
+            Copy-Item "$relDir/scrooge" -Destination $stageDir
+            Copy-Item "$relDir/abtop" -Destination $stageDir
+            $tarPath = "$portableDir/scrooge_${env:VERSION}_${env:ARCH_LABEL}-portable.tar.gz"
+            tar -czf $tarPath -C $stageDir .
+          }
+
       - name: Verify Authenticode
-        if: runner.os == 'Windows' && (github.ref_type == 'tag' || inputs.sign_platform)
+        if: runner.os == 'Windows' && needs.preflight.outputs.sign_windows == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -200,7 +298,7 @@ jobs:
           }
 
       - name: Verify Developer ID and notarization
-        if: runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform)
+        if: runner.os == 'macOS' && needs.preflight.outputs.sign_macos == 'true'
         run: |
           app='target/${{ matrix.target }}/release/bundle/macos/Scrooge.app'
           codesign --verify --deep --strict --verbose=2 "$app"
@@ -220,12 +318,15 @@ jobs:
             target/${{ matrix.target }}/release/bundle/**/*.deb
             target/${{ matrix.target }}/release/bundle/**/*.rpm
             target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            target/${{ matrix.target }}/release/bundle/portable/*
           if-no-files-found: error
           retention-days: 7
 
   verify:
-    name: Verify installers and updater signatures
-    needs: build
+    name: Verify bundles, generate checksums & manifests
+    needs: [preflight, build]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -239,10 +340,44 @@ jobs:
           pattern: scrooge-*
           path: ${{ runner.temp }}/scrooge-bundles
       - name: Install minisign
+        if: needs.preflight.outputs.has_updater_key == 'true'
         run: |
           sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get -o Acquire::Retries=3 install -y minisign
-      - name: Check all bundle types and verify signatures against the app key
+      - name: Check all bundle types and verify updater signatures
         env:
           BUNDLES: ${{ runner.temp }}/scrooge-bundles
+          SKIP_SIGNATURE_VERIFY: ${{ needs.preflight.outputs.has_updater_key != 'true' && '1' || '0' }}
         run: node scripts/verify-installers.mjs "$BUNDLES"
+      - name: Generate SHA256SUMS.txt and package manager manifests
+        env:
+          BUNDLES: ${{ runner.temp }}/scrooge-bundles
+          OUT: ${{ runner.temp }}/scrooge-packaging
+        run: node scripts/generate-packaging.mjs "$BUNDLES" "$OUT"
+      - name: Upload portable archives, checksums and package manifests to Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          BUNDLES: ${{ runner.temp }}/scrooge-bundles
+          OUT: ${{ runner.temp }}/scrooge-packaging
+        run: |
+          find "$BUNDLES" -type f \( -name "*-portable.zip" -o -name "*-portable.tar.gz" \) -exec cp {} "$OUT/" \;
+          gh release upload "$TAG" "$OUT"/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  publish:
+    name: Approve & publish release (${{ needs.preflight.outputs.tag }})
+    needs: [preflight, verify]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.tag }}
+    steps:
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          gh release edit "$TAG" --draft=false --latest --repo "$GITHUB_REPOSITORY"
+          echo "Published Scrooge $TAG!"

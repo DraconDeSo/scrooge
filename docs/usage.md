@@ -44,6 +44,31 @@ Save one JSON object per line in a `.jsonl` file. For example:
 {"id":"cloud-bill-unique-row-id","timestamp":"2026-11-06T08:30:00Z","provider":"gemini","kind":"api","currency":"EUR","amount_micros":1250000,"model":"gemini-flash"}
 ```
 
+### Exporting data (`CSV`, `JSON`, `Markdown`)
+
+<div align="center">
+  <img src="images/export.jpg" width="640" alt="Export data dialog" />
+</div>
+
+Click **`⤓ Export`** in the top toolbar, press **`E`**, or click the **`⤓`** button on any
+project or provider row to open the **Export data** dialog:
+
+- **Project tokens (`project_tokens`)**: export tokens used per project over any time period,
+  choosing a specific project (or all projects) and checking/unchecking **only the providers
+  that worked on that project**. Supports grouping by *project + provider + model*, *project +
+  provider*, or *project summary*.
+- **Provider stats (`provider_stats`)**: export usage statistics across a chosen period
+  (*Today*, *Last 7/30/90/365 days*, or *Custom dates*) for any selection of providers.
+- **Daily timeline (`daily_timeline`)**: day-by-day (`YYYY-MM-DD`) breakdown of requests,
+  input/output/cache tokens and charges, filtered by period, project and providers.
+- **Billing & quotas (`billing_quota`)**: recorded/synced billing charges alongside live
+  Copilot, Claude and Codex quotas.
+- **Live & storage (`live_sessions`)**: snapshot of currently active sessions, context window
+  usage, listening ports and disk storage per provider.
+
+Every preset previews the output live and can be saved to your `Downloads` folder (with
+**Open in folder**) or copied to the clipboard as **CSV**, **JSON**, or **Markdown**.
+
 Use `api` for API charges and `plan_extra` for paid subscription overages. The example
 amount is EUR 1.25. Preserve the currency, stable billing row ID and timestamp from the
 source report. The supported provider IDs are `claude`, `codex`, `copilot`, `gemini`,

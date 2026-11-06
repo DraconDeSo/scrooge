@@ -394,19 +394,16 @@ impl MultiCollector {
         self.tick_count += 1;
 
         // Ports: refresh on slow tick or when the PID set changes (PID reuse safety)
-        let fresh_process = SharedProcessData::fetch(Some(&self.cached_ports), slow_tick);
-        let mut current_pids: Vec<u32> = fresh_process.process_info.keys().copied().collect();
+        let mut shared = SharedProcessData::fetch(Some(&self.cached_ports), slow_tick);
+        let mut current_pids: Vec<u32> = shared.process_info.keys().copied().collect();
         current_pids.sort_unstable();
         let pids_changed = current_pids != self.cached_port_pids;
 
-        let mut shared = if slow_tick || pids_changed {
-            let s = SharedProcessData::fetch(None, slow_tick);
-            self.cached_ports = s.ports.clone();
+        if slow_tick || pids_changed {
+            shared.ports = process::get_listening_ports();
+            self.cached_ports = shared.ports.clone();
             self.cached_port_pids = current_pids;
-            s
-        } else {
-            fresh_process
-        };
+        }
 
         // Detect MCP servers and stash the suppression sets in `shared`
         // so CodexCollector can avoid double-counting their rollouts.

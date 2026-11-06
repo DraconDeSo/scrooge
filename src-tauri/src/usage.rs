@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_LINE: u64 = 8 * 1024 * 1024;
@@ -74,9 +75,9 @@ impl Tokens {
 struct Record {
     id: Option<String>,
     time: u64,
-    project: Option<String>,
-    model: Option<String>,
-    account: Option<String>,
+    project: Option<Arc<str>>,
+    model: Option<Arc<str>>,
+    account: Option<Arc<str>>,
     tokens: Tokens,
     billing: Option<(String, Charge)>,
 }
@@ -128,18 +129,18 @@ impl Group {
         record: &Record,
         provider: &str,
         source: Source,
-        projects: &mut HashMap<String, String>,
+        projects: &mut HashMap<Arc<str>, String>,
     ) -> Self {
         Self {
             provider: provider.to_owned(),
             project: record.project.as_ref().map(|path| {
                 projects
-                    .entry(path.clone())
+                    .entry(Arc::clone(path))
                     .or_insert_with(|| project_root(path))
                     .clone()
             }),
-            model: record.model.clone(),
-            account: record.account.clone(),
+            model: record.model.as_deref().map(str::to_owned),
+            account: record.account.as_deref().map(str::to_owned),
             source,
         }
     }
@@ -172,6 +173,31 @@ pub struct Report {
     coverage: Vec<Coverage>,
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+struct DailyGroup {
+    date: String,
+    #[serde(flatten)]
+    group: Group,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DailyRow {
+    #[serde(flatten)]
+    group: DailyGroup,
+    #[serde(flatten)]
+    totals: Totals,
+}
+
+fn local_day(ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms as i64)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
 struct ParsedFile {
     modified: SystemTime,
     len: u64,
@@ -182,7 +208,17 @@ struct ParsedFile {
 #[derive(Default)]
 pub struct History {
     files: HashMap<PathBuf, ParsedFile>,
+    strings: HashSet<Arc<str>>,
     billing: billing::Sync,
+}
+
+fn intern_arc(pool: &mut HashSet<Arc<str>>, value: Option<Arc<str>>) -> Option<Arc<str>> {
+    let arc = value?;
+    if let Some(existing) = pool.get(arc.as_ref()) {
+        return Some(Arc::clone(existing));
+    }
+    pool.insert(Arc::clone(&arc));
+    Some(arc)
 }
 
 impl History {
@@ -246,7 +282,12 @@ impl History {
                     .get(&path)
                     .is_some_and(|c| c.modified == modified && c.len == meta.len() && c.readable);
                 if !cached {
-                    let (records, readable) = read_records(source, &path);
+                    let (mut records, readable) = read_records(source, &path);
+                    for rec in &mut records {
+                        rec.project = intern_arc(&mut self.strings, rec.project.take());
+                        rec.model = intern_arc(&mut self.strings, rec.model.take());
+                        rec.account = intern_arc(&mut self.strings, rec.account.take());
+                    }
                     self.files.insert(
                         path.clone(),
                         ParsedFile {
@@ -334,9 +375,10 @@ impl History {
                     let count = rows.len();
                     for row in rows {
                         let project = row.project.map(|path| {
+                            let arc: Arc<str> = Arc::from(path);
                             projects
-                                .entry(path.clone())
-                                .or_insert_with(|| project_root(&path))
+                                .entry(Arc::clone(&arc))
+                                .or_insert_with(|| project_root(&arc))
                                 .clone()
                         });
                         groups
@@ -365,6 +407,83 @@ impl History {
             .map(|(group, totals)| Row { group, totals })
             .collect();
         Report { rows, coverage }
+    }
+
+    pub fn daily_report(&mut self, settings: &Settings, start: u64, end: u64) -> Vec<DailyRow> {
+        let _ = self.report(settings, start, end, None);
+        let mut groups: BTreeMap<DailyGroup, Totals> = BTreeMap::new();
+        let mut projects = HashMap::new();
+        for source in [
+            Source::Claude,
+            Source::Codex,
+            Source::Copilot,
+            Source::GeminiCli,
+            Source::GeminiApp,
+            Source::Antigravity,
+            Source::AntigravityIde,
+            Source::OpenCode,
+            Source::Grok,
+            Source::Billing,
+        ] {
+            if !settings.provider_enabled(source.provider()) {
+                continue;
+            }
+            let mut files = source_files(source);
+            files.sort_unstable();
+            files.dedup();
+            let mut seen = HashSet::new();
+            for path in files {
+                let Some(file) = self.files.get(&path) else {
+                    continue;
+                };
+                for record in &file.records {
+                    if record.time < start || record.time >= end {
+                        continue;
+                    }
+                    let provider = record
+                        .billing
+                        .as_ref()
+                        .map_or(source.provider(), |(provider, _)| provider);
+                    if !settings.provider_enabled(provider)
+                        || record
+                            .id
+                            .as_ref()
+                            .is_some_and(|id| !seen.insert(id.clone()))
+                    {
+                        continue;
+                    }
+                    let group = DailyGroup {
+                        date: local_day(record.time),
+                        group: Group::from_record(record, provider, source, &mut projects),
+                    };
+                    groups.entry(group).or_default().record(source, record);
+                }
+            }
+            if source == Source::OpenCode {
+                let opencode = abtop::collector::OpenCodeCollector::new();
+                if let Some(records) = opencode.query_usage(start, end) {
+                    for row in records {
+                        let Some(record) = decode_opencode(&row) else {
+                            continue;
+                        };
+                        let group = DailyGroup {
+                            date: local_day(record.time),
+                            group: Group::from_record(
+                                &record,
+                                source.provider(),
+                                source,
+                                &mut projects,
+                            ),
+                        };
+                        groups.entry(group).or_default().record(source, &record);
+                    }
+                }
+            }
+        }
+        groups
+            .into_iter()
+            .map(|(group, totals)| DailyRow { group, totals })
+            .collect()
     }
 }
 
@@ -498,8 +617,8 @@ fn collect(dir: &Path, depth: u8, filter: &impl Fn(&str) -> bool, files: &mut Ve
 
 #[derive(Default)]
 struct FileContext {
-    project: Option<String>,
-    model: Option<String>,
+    project: Option<Arc<str>>,
+    model: Option<Arc<str>>,
     turn_id: Option<String>,
     codex_total: Option<Tokens>,
 }
@@ -548,7 +667,8 @@ fn read_records(source: Source, path: &Path) -> (Vec<Record>, bool) {
             .parent()
             .and_then(Path::parent)
             .and_then(|project| small_text(&project.join(".project_root")))
-            .filter(|project| !project.is_empty());
+            .filter(|project| !project.is_empty())
+            .map(Arc::from);
     } else if source == Source::Copilot {
         context.project = path
             .parent()
@@ -557,7 +677,7 @@ fn read_records(source: Source, path: &Path) -> (Vec<Record>, bool) {
                 yaml.lines().find_map(|line| {
                     line.trim()
                         .strip_prefix("cwd:")
-                        .map(|v| v.trim().trim_matches('"').to_string())
+                        .map(|v| Arc::<str>::from(v.trim().trim_matches('"')))
                 })
             });
     }
@@ -613,6 +733,7 @@ fn read_records(source: Source, path: &Path) -> (Vec<Record>, bool) {
             readable = false;
         }
     }
+    rows.shrink_to_fit();
     (rows, readable)
 }
 
@@ -635,6 +756,13 @@ fn str_field(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn arc_field(value: &Value) -> Option<Arc<str>> {
+    value
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 4096)
+        .map(Arc::from)
+}
+
 fn time(value: &Value) -> Option<u64> {
     let date = chrono::DateTime::parse_from_rfc3339(value.as_str()?).ok()?;
     u64::try_from(date.timestamp_millis()).ok()
@@ -646,12 +774,14 @@ fn tokens(value: &Value, field: &str) -> u64 {
 
 fn decode_opencode(row: &Value) -> Option<Record> {
     let model = str_field(&row["model"]).map(|model| {
-        str_field(&row["provider"])
-            .map_or_else(|| model.clone(), |provider| format!("{provider}/{model}"))
+        Arc::<str>::from(
+            str_field(&row["provider"])
+                .map_or_else(|| model.clone(), |provider| format!("{provider}/{model}")),
+        )
     });
     Some(Record {
         time: row["time_ms"].as_u64()?,
-        project: str_field(&row["cwd"]),
+        project: arc_field(&row["cwd"]),
         model,
         id: None,
         account: None,
@@ -687,11 +817,11 @@ fn decode(source: Source, value: &Value, context: &mut FileContext) -> Option<Re
     let counts = match source {
         Source::Claude if ty == "assistant" => {
             let usage = &value["message"]["usage"];
-            model = str_field(&value["message"]["model"]).filter(|m| m != "<synthetic>");
+            model = arc_field(&value["message"]["model"]).filter(|m| m.as_ref() != "<synthetic>");
             if value["message"]["model"] == "<synthetic>" || !usage.is_object() {
                 return None;
             }
-            project = str_field(&value["cwd"]);
+            project = arc_field(&value["cwd"]);
             id = str_field(&value["requestId"]).or_else(|| str_field(&value["message"]["id"]));
             Tokens {
                 input: tokens(usage, "input_tokens"),
@@ -703,9 +833,9 @@ fn decode(source: Source, value: &Value, context: &mut FileContext) -> Option<Re
         Source::Codex => {
             let payload = &value["payload"];
             if matches!(ty, "session_meta" | "turn_context") {
-                context.project = str_field(&payload["cwd"]).or(context.project.take());
+                context.project = arc_field(&payload["cwd"]).or(context.project.take());
                 if ty == "turn_context" {
-                    context.model = str_field(&payload["model"]);
+                    context.model = arc_field(&payload["model"]);
                     context.turn_id = str_field(&payload["turn_id"]);
                 }
                 return None;
@@ -733,17 +863,17 @@ fn decode(source: Source, value: &Value, context: &mut FileContext) -> Option<Re
         Source::Copilot => {
             let data = &value["data"];
             if matches!(ty, "session.start" | "session.resume") {
-                context.project = str_field(&data["context"]["cwd"]).or(context.project.take());
-                context.model = str_field(&data["selectedModel"]).or(context.model.take());
+                context.project = arc_field(&data["context"]["cwd"]).or(context.project.take());
+                context.model = arc_field(&data["selectedModel"]).or(context.model.take());
                 return None;
             }
             if ty != "session.usage_record" {
                 return None;
             }
             let usage = &data["usage"];
-            model = str_field(&usage["model"]).or(model);
+            model = arc_field(&usage["model"]).or(model);
             id = str_field(&value["id"]);
-            account = str_field(&data["accountLogin"]);
+            account = arc_field(&data["accountLogin"]);
             Tokens::inclusive(
                 tokens(usage, "inputTokens"),
                 tokens(usage, "outputTokens"),
@@ -753,7 +883,7 @@ fn decode(source: Source, value: &Value, context: &mut FileContext) -> Option<Re
         }
         Source::GeminiCli if ty == "gemini" => {
             let usage = &value["tokens"];
-            model = str_field(&value["model"]);
+            model = arc_field(&value["model"]);
             id = str_field(&value["id"]);
             Tokens::inclusive(
                 tokens(usage, "input"),
@@ -766,8 +896,8 @@ fn decode(source: Source, value: &Value, context: &mut FileContext) -> Option<Re
             if ty == "PLANNER_RESPONSE" && value["status"] == "DONE" =>
         {
             time = self::time(&value["created_at"]);
-            project = str_field(&value["cwd"]);
-            model = str_field(&value["model"]);
+            project = arc_field(&value["cwd"]);
+            model = arc_field(&value["model"]);
             Tokens::inclusive(
                 tokens(value, "input_tokens"),
                 tokens(value, "output_tokens"),
@@ -794,9 +924,9 @@ fn decode(source: Source, value: &Value, context: &mut FileContext) -> Option<Re
                 value["account"].as_str().unwrap_or(""),
                 str_field(&value["id"])?
             ));
-            project = str_field(&value["project"]);
-            model = str_field(&value["model"]);
-            account = str_field(&value["account"]);
+            project = arc_field(&value["project"]);
+            model = arc_field(&value["model"]);
+            account = arc_field(&value["account"]);
             billing = Some((provider, charge));
             Tokens::default()
         }
@@ -864,7 +994,7 @@ fn project_name(path: &Path) -> String {
         if let Some(unc) = name.strip_prefix(r"\\?\UNC\") {
             return format!(r"\\{unc}");
         }
-        return name.strip_prefix(r"\\?\").unwrap_or(&name).to_string();
+        name.strip_prefix(r"\\?\").unwrap_or(&name).to_string()
     }
     #[cfg(not(windows))]
     name.into_owned()

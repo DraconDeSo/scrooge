@@ -131,17 +131,23 @@ impl GrokCollector {
                 }
             }
         }
-        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found.sort_by_key(|a| std::cmp::Reverse(a.0));
         found.into_iter().map(|(_, p)| p).collect()
     }
 
-    fn build(&self, dir: &Path, pid: u32, shared: &SharedProcessData) -> AgentSession {
-        let summary = read_json(&dir.join("summary.json"));
-        let signals = read_json(&dir.join("signals.json"));
+    fn session_cwd(dir: &Path, summary: Option<&Value>) -> String {
+        let owned;
+        let summary = match summary {
+            Some(s) => s,
+            None => {
+                owned = read_json(&dir.join("summary.json"));
+                &owned
+            }
+        };
         let group = dir.parent();
         // cwd: summary.info.* > .cwd file > decoded folder name
         let info = &summary["info"];
-        let cwd = [
+        [
             "cwd",
             "working_directory",
             "workingDirectory",
@@ -161,7 +167,14 @@ impl GrokCollector {
                 .and_then(|g| g.file_name())
                 .map(|n| percent_decode(&n.to_string_lossy()))
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+    }
+
+    fn build(&self, dir: &Path, pid: u32, shared: &SharedProcessData) -> AgentSession {
+        let summary = read_json(&dir.join("summary.json"));
+        let signals = read_json(&dir.join("signals.json"));
+        let info = &summary["info"];
+        let cwd = Self::session_cwd(dir, Some(&summary));
         let session_id = ["session_id", "sessionId", "id"]
             .iter()
             .find_map(|k| info[*k].as_str())
@@ -274,11 +287,12 @@ impl AgentCollector for GrokCollector {
             self.candidates = self.scan_sessions();
             self.last_pids = pids.clone();
         }
-        self.candidates
-            .iter()
-            .zip(pids.iter())
-            .map(|(dir, pid)| self.build(dir, *pid, shared))
-            .collect()
+        process::match_pids_by_cwd(&pids, &self.candidates, &shared.process_info, |dir| {
+            Self::session_cwd(dir, None)
+        })
+        .into_iter()
+        .map(|(dir, pid)| self.build(&dir, pid, shared))
+        .collect()
     }
 }
 

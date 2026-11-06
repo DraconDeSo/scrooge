@@ -113,7 +113,7 @@ pub fn get_process_info() -> HashMap<u32, ProcInfo> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn get_process_info() -> HashMap<u32, ProcInfo> {
+fn with_windows_sys<R>(f: impl FnOnce(&mut sysinfo::System) -> R) -> Option<R> {
     use std::sync::{Mutex, OnceLock};
 
     // sysinfo's `cpu_usage()` is a delta between two refreshes — a freshly
@@ -129,50 +129,54 @@ pub fn get_process_info() -> HashMap<u32, ProcInfo> {
     if sys.is_none() {
         *sys = sysinfo::System::new().ok();
     }
-    let Some(sys) = sys.as_mut() else {
-        return HashMap::new();
-    };
+    sys.as_mut().map(f)
+}
 
-    sys.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::All,
-        true,
-        sysinfo::ProcessRefreshKind::nothing()
-            .with_cpu()
-            .with_memory()
-            .with_cmd(sysinfo::UpdateKind::Always),
-    );
-
-    let mut map = HashMap::new();
-    for (pid, proc_) in sys.processes() {
-        let pid_u32 = pid.as_u32();
-        // cmd() can be empty on Windows (cmdline retrieval failed for this
-        // process); fall back to the executable name so cmd_has_binary still
-        // matches `claude` / `codex` for those processes.
-        let command = if proc_.cmd().is_empty() {
-            proc_.name().to_string_lossy().into_owned()
-        } else {
-            proc_
-                .cmd()
-                .iter()
-                .map(|s| s.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        if command.is_empty() {
-            continue;
-        }
-        map.insert(
-            pid_u32,
-            ProcInfo {
-                pid: pid_u32,
-                ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
-                rss_kb: proc_.memory() / 1024,
-                cpu_pct: proc_.cpu_usage() as f64,
-                command,
-            },
+#[cfg(target_os = "windows")]
+pub fn get_process_info() -> HashMap<u32, ProcInfo> {
+    with_windows_sys(|sys| {
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory()
+                .with_cmd(sysinfo::UpdateKind::Always),
         );
-    }
-    map
+
+        let mut map = HashMap::new();
+        for (pid, proc_) in sys.processes() {
+            let pid_u32 = pid.as_u32();
+            // cmd() can be empty on Windows (cmdline retrieval failed for this
+            // process); fall back to the executable name so cmd_has_binary still
+            // matches `claude` / `codex` for those processes.
+            let command = if proc_.cmd().is_empty() {
+                proc_.name().to_string_lossy().into_owned()
+            } else {
+                proc_
+                    .cmd()
+                    .iter()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            if command.is_empty() {
+                continue;
+            }
+            map.insert(
+                pid_u32,
+                ProcInfo {
+                    pid: pid_u32,
+                    ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
+                    rss_kb: proc_.memory() / 1024,
+                    cpu_pct: proc_.cpu_usage() as f64,
+                    command,
+                },
+            );
+        }
+        map
+    })
+    .unwrap_or_default()
 }
 
 #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
@@ -516,6 +520,141 @@ fn windows_command_tokens(cmd: &str) -> Vec<String> {
     tokens
 }
 
+/// Compare a process cwd with a session directory.
+/// On Windows paths are case-insensitive and may mix `/` and `\`, so
+/// normalize before comparing; elsewhere keep the exact comparison.
+#[cfg(target_os = "windows")]
+pub fn paths_equal(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    };
+    norm(a) == norm(b)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn paths_equal(a: &str, b: &str) -> bool {
+    a == b
+}
+
+/// Get the current working directory of a process.
+/// Uses /proc on Linux, shared sysinfo (PEB) on Windows, lsof on macOS/other Unix.
+#[cfg(target_os = "linux")]
+pub fn get_process_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{}/cwd", pid))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "windows")]
+pub fn get_process_cwd(pid: u32) -> Option<String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+    // `lsof` does not exist on Windows; sysinfo reads the cwd from the
+    // process PEB. Reuse the shared System instance and refresh just this PID.
+    let pid = Pid::from_u32(pid);
+    with_windows_sys(|sys| {
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+        );
+        sys.process(pid)
+            .and_then(|p| p.cwd())
+            .map(|p| p.to_string_lossy().into_owned())
+    })
+    .flatten()
+}
+
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
+pub fn get_process_cwd(pid: u32) -> Option<String> {
+    // -a ANDs the selection terms; without it, lsof ORs `-p <pid>` with
+    // `-d cwd` and returns cwd entries for unrelated processes too.
+    let output = Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // lsof -Fn output: lines starting with 'n' contain the path
+    stdout
+        .lines()
+        .find(|l| l.starts_with('n') && l.len() > 1)
+        .map(|l| l[1..].to_string())
+}
+
+/// Match running agent `pids` to `candidates` (ordered by recency, newest first)
+/// using each candidate's working directory (`candidate_cwd`) and each PID's
+/// live working directory (from `get_process_cwd`) or command line, falling back
+/// to pairing remaining unmatched PIDs with remaining candidates in recency order.
+pub fn match_pids_by_cwd<T: Clone>(
+    pids: &[u32],
+    candidates: &[T],
+    process_info: &HashMap<u32, ProcInfo>,
+    mut candidate_cwd: impl FnMut(&T) -> String,
+) -> Vec<(T, u32)> {
+    let pid_meta: Vec<(u32, Option<String>, &str)> = pids
+        .iter()
+        .map(|&pid| {
+            let cwd = get_process_cwd(pid);
+            let cmd = process_info
+                .get(&pid)
+                .map(|p| p.command.as_str())
+                .unwrap_or("");
+            (pid, cwd, cmd)
+        })
+        .collect();
+    match_pids_with_meta(&pid_meta, candidates, &mut candidate_cwd)
+}
+
+pub(crate) fn match_pids_with_meta<T: Clone>(
+    pid_meta: &[(u32, Option<String>, &str)],
+    candidates: &[T],
+    candidate_cwd: &mut impl FnMut(&T) -> String,
+) -> Vec<(T, u32)> {
+    let mut claimed_pids = std::collections::HashSet::new();
+    let mut claimed_candidates = vec![false; candidates.len()];
+    let mut pairs = Vec::with_capacity(pid_meta.len().min(candidates.len()));
+
+    // Pass 1: exact cwd or command-line match, preferring newest candidate for each PID
+    for (idx, cand) in candidates.iter().enumerate() {
+        if claimed_pids.len() >= pid_meta.len() {
+            break;
+        }
+        let session_dir = candidate_cwd(cand);
+        if session_dir.len() < 2 {
+            continue;
+        }
+        if let Some(&(pid, _, _)) = pid_meta.iter().find(|&&(pid, ref cwd, cmd)| {
+            !claimed_pids.contains(&pid)
+                && (cwd.as_deref().is_some_and(|c| paths_equal(c, &session_dir))
+                    || cmd.contains(&session_dir))
+        }) {
+            claimed_pids.insert(pid);
+            claimed_candidates[idx] = true;
+            pairs.push((cand.clone(), pid));
+        }
+    }
+
+    // Pass 2: fallback for any remaining unclaimed PIDs in recency order
+    let remaining_pids = pid_meta
+        .iter()
+        .map(|&(pid, _, _)| pid)
+        .filter(|pid| !claimed_pids.contains(pid));
+    let remaining_cands = candidates
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !claimed_candidates[*idx])
+        .map(|(_, c)| c.clone());
+    for (cand, pid) in remaining_cands.zip(remaining_pids) {
+        pairs.push((cand, pid));
+    }
+
+    pairs
+}
+
 pub fn collect_git_stats(cwd: &str) -> (u32, u32) {
     // Validate cwd is an existing directory before running git
     if !std::path::Path::new(cwd).is_dir() {
@@ -678,5 +817,24 @@ mod tests {
         let mut m = HashMap::new();
         m.insert(20, proc(20, 99));
         assert!(!is_descendant_of(20, 7, &m));
+    }
+
+    #[test]
+    fn match_pids_with_meta_pins_pids_to_cwd_before_recency_fallback() {
+        // Candidates are ordered newest-first: proj-b was modified more recently
+        // than proj-a, while PID 100 is in proj-a and PID 200 is in proj-b.
+        let candidates = vec![("/work/proj-b", "s-b"), ("/work/proj-a", "s-a")];
+        let pid_meta = vec![
+            (100, Some("/work/proj-a".to_string()), "gemini"),
+            (200, Some("/work/proj-b".to_string()), "gemini"),
+        ];
+        let pairs = match_pids_with_meta(&pid_meta, &candidates, &mut |(cwd, _)| cwd.to_string());
+        assert_eq!(
+            pairs,
+            vec![
+                (("/work/proj-b", "s-b"), 200),
+                (("/work/proj-a", "s-a"), 100),
+            ]
+        );
     }
 }

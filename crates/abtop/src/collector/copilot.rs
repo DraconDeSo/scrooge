@@ -883,14 +883,13 @@ mod tests {
             .append(true)
             .open(dir.join("events.jsonl"))
             .unwrap();
-        write!(
-            f,
-            "{}\n{}\n{}",
+        let appended = [
             r#"{"type":"tool.execution_complete","data":{"toolCallId":"t1","success":true},"timestamp":"2026-11-05T14:11:25.100Z"}"#,
             r#"{"type":"assistant.turn_end","data":{"turnId":"0"},"timestamp":"2026-11-05T14:11:26.000Z"}"#,
-            r#"{"type":"session.usage_checkpoint","data":{"totalPremiumRequests":2,"totalNanoAiu":1500,"accountingSnapshot":{"totalUserRequests":1,"codeChanges":{"linesAdded":7,"linesRemoved":2}}},"timestamp":"2026-11-05T14:11:27.000Z"}"#
-        )
-        .unwrap();
+            r#"{"type":"session.usage_checkpoint","data":{"totalPremiumRequests":2,"totalNanoAiu":1500,"accountingSnapshot":{"totalUserRequests":1,"codeChanges":{"linesAdded":7,"linesRemoved":2}}},"timestamp":"2026-11-05T14:11:27.000Z"}"#,
+        ]
+        .join("\n");
+        f.write_all(appended.as_bytes()).unwrap();
         drop(f);
         c.refresh_events(&dir);
         let p = c.parsed.get(&dir).unwrap();
