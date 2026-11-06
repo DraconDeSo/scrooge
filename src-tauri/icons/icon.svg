@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#0d1117"/>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="none" stroke="#30363d" stroke-width="12"/>
+  <!-- activity bars -->
+  <rect x="104" y="300" width="56" height="112" rx="14" fill="#3fb950"/>
+  <rect x="184" y="220" width="56" height="192" rx="14" fill="#58a6ff"/>
+  <rect x="264" y="160" width="56" height="252" rx="14" fill="#a371f7"/>
+  <rect x="344" y="250" width="56" height="162" rx="14" fill="#f0883e"/>
+  <!-- pulse line -->
+  <polyline points="96,150 176,150 212,96 252,196 292,124 324,150 416,150" fill="none" stroke="#e6edf3" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

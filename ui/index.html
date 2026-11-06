@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en" data-theme="default" data-scheme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scrooge</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="themes.css" />
+</head>
+<body class="mode-compact density-normal">
+  <header class="titlebar" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <span class="pulse" id="pulse"></span>
+      <span class="name" data-tauri-drag-region>scrooge</span>
+      <span class="counts" id="counts" data-tauri-drag-region></span>
+    </div>
+    <div class="legend" id="legend" data-tauri-drag-region></div>
+    <div class="vitals" id="vitals" data-tauri-drag-region></div>
+    <div class="actions">
+      <button id="btn-settings" title="Settings (S)">⚙</button>
+      <button id="btn-refresh" title="Refresh now (R)">⟳</button>
+      <button id="btn-pin" title="Always on top">📌</button>
+      <button id="btn-mode" title="Full screen (F)">⤢</button>
+      <button id="btn-hide" title="Hide to tray (Esc)">✕</button>
+    </div>
+  </header>
+
+  <div id="update-banner" class="update-banner hidden">
+    <span id="update-text"></span>
+    <button id="update-install">Install &amp; restart</button>
+    <button id="update-later" title="Hide until next start">Later</button>
+  </div>
+
+  <main id="app">
+    <section class="panel p-context">
+      <h2>context</h2>
+      <div class="ctx-grid">
+        <div class="rate">
+          <div class="rate-head">
+            <span>token rate</span>
+            <div class="seg mini" id="rate-group">
+              <button data-v="provider">provider</button><button data-v="project">project</button>
+            </div>
+            <b id="rate-now">0/s</b>
+          </div>
+          <canvas id="rate-canvas"></canvas>
+          <div class="rate-legend" id="rate-legend"></div>
+        </div>
+        <div class="ctx-bars" id="ctx-bars"></div>
+      </div>
+    </section>
+
+    <section class="panel p-quota">
+      <h2>quota &amp; usage</h2>
+      <div id="quota" class="scroll-y"></div>
+    </section>
+
+    <section class="panel p-tokens">
+      <h2>tokens</h2>
+      <div id="tokens" class="scroll-y"></div>
+    </section>
+
+    <section class="panel p-projects">
+      <h2>projects</h2>
+      <div id="projects" class="scroll-y"></div>
+    </section>
+
+    <section class="panel p-storage">
+      <h2>storage <button class="mini-btn" id="storage-refresh" title="Measure again">⟳</button></h2>
+      <div id="storage" class="scroll-y"></div>
+    </section>
+
+    <section class="panel p-ports">
+      <h2>ports</h2>
+      <div id="ports" class="scroll-y"></div>
+    </section>
+
+    <section class="panel p-sessions">
+      <h2>sessions <span class="filter-wrap"><input id="filter" placeholder="/ filter" spellcheck="false" /></span></h2>
+      <div class="sessions-wrap">
+        <div id="sessions" class="sessions"></div>
+        <div id="detail" class="detail"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ------------------------------------------------------------ settings -->
+  <div id="settings" class="settings hidden" role="dialog" aria-label="Settings">
+    <div class="st-card">
+      <nav class="st-nav" id="st-nav">
+        <div class="st-title">Settings</div>
+        <button data-tab="general" class="on">General</button>
+        <button data-tab="appearance">Appearance</button>
+        <button data-tab="providers">Providers</button>
+        <button data-tab="sessions">Sessions</button>
+        <button data-tab="quota">Quota &amp; accounts</button>
+        <button data-tab="about">About</button>
+      </nav>
+      <div class="st-body">
+        <button class="st-close" id="settings-close" title="Close (Esc)">✕</button>
+
+        <!-- General -->
+        <section data-pane="general" class="st-pane on">
+          <h3>General</h3>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Start with Windows</b><small>Launch Scrooge when you sign in.</small></div>
+              <label class="sw"><input type="checkbox" id="s-autostart" /><i></i></label>
+            </div>
+            <div class="st-row">
+              <div><b>Stay in the tray at login</b><small>When started by Windows, don't open the panel.</small></div>
+              <label class="sw"><input type="checkbox" id="s-start-hidden" /><i></i></label>
+            </div>
+            <div class="st-row">
+              <div><b>Open in</b><small>View shown when Scrooge starts.</small></div>
+              <div class="seg" id="s-start-mode">
+                <button data-v="compact">Compact</button><button data-v="full">Full screen</button>
+              </div>
+            </div>
+          </div>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Always on top</b><small>Keep the compact panel above other windows.</small></div>
+              <label class="sw"><input type="checkbox" id="s-ontop" /><i></i></label>
+            </div>
+            <div class="st-row">
+              <div><b>Global shortcut</b><small>Show or hide the panel from anywhere.</small></div>
+              <label class="sw"><input type="checkbox" id="s-shortcut-on" /><i></i></label>
+            </div>
+            <div class="st-row sub">
+              <div><small>Click the field and press the new combination.</small><small class="err" id="s-shortcut-err"></small></div>
+              <input class="kbd" id="s-shortcut" readonly />
+            </div>
+          </div>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Session refresh</b><small>How often agents and processes are scanned.</small></div>
+              <select id="s-tick"><option value="1">1 s</option><option value="2">2 s</option><option value="3">3 s</option><option value="5">5 s</option><option value="10">10 s</option></select>
+            </div>
+            <div class="st-row">
+              <div><b>Quota refresh</b><small>Copilot and Claude quota calls to GitHub / Anthropic.</small></div>
+              <select id="s-quota-min"><option value="1">1 min</option><option value="2">2 min</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option><option value="60">60 min</option></select>
+            </div>
+          </div>
+        </section>
+
+        <!-- Appearance -->
+        <section data-pane="appearance" class="st-pane">
+          <h3>Appearance</h3>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Theme</b><small>Each theme has a light and a dark version.</small></div>
+              <div class="seg" id="s-scheme">
+                <button data-v="dark">Dark</button><button data-v="light">Light</button><button data-v="system">System</button>
+              </div>
+            </div>
+            <div id="s-themes" class="themes"></div>
+          </div>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Density</b><small>Text size and spacing.</small></div>
+              <div class="seg" id="s-density">
+                <button data-v="compact">Small</button><button data-v="normal">Normal</button><button data-v="comfortable">Large</button>
+              </div>
+            </div>
+          </div>
+          <div class="st-group">
+            <div class="st-row"><div><b>Provider colors</b><small>Each theme ships its own palette. Pick a color to override it; each provider must keep its own color.</small></div><button class="btn" id="s-colors-reset">Use theme colors</button></div>
+            <div id="s-colors" class="colors"></div>
+            <small class="err" id="s-colors-err"></small>
+          </div>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Warning threshold</b><small>Context or quota usage shown in yellow.</small></div>
+              <div class="rng"><input type="range" id="s-warn" min="50" max="95" step="5" /><span id="s-warn-v"></span></div>
+            </div>
+            <div class="st-row">
+              <div><b>Critical threshold</b><small>Shown in red with ⚠.</small></div>
+              <div class="rng"><input type="range" id="s-crit" min="60" max="99" step="1" /><span id="s-crit-v"></span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Providers -->
+        <section data-pane="providers" class="st-pane">
+          <h3>Providers</h3>
+          <div class="st-group">
+            <div class="st-row"><div><b>Enabled providers</b><small>A disabled provider is not scanned at all: its files are not read and no quota requests are made for it.</small></div></div>
+            <div id="s-providers" class="prov-toggles"></div>
+          </div>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Disk usage</b><small id="s-storage-info">Measured every 15 minutes.</small></div>
+              <button class="btn" id="s-storage-refresh">Measure now</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Sessions -->
+        <section data-pane="sessions" class="st-pane">
+          <h3>Sessions</h3>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Sort by</b></div>
+              <select id="s-sort">
+                <option value="recent">Most recent</option>
+                <option value="activity">Activity (working first)</option>
+                <option value="provider">Provider</option>
+                <option value="context">Context usage</option>
+                <option value="tokens">Tokens</option>
+              </select>
+            </div>
+            <div class="st-row">
+              <div><b>Show idle sessions</b><small>Sessions waiting for input or in unknown state.</small></div>
+              <label class="sw"><input type="checkbox" id="s-idle" /><i></i></label>
+            </div>
+            <div class="st-row">
+              <div><b>Show chat in details</b><small>Last prompts and replies of the selected session.</small></div>
+              <label class="sw"><input type="checkbox" id="s-chat" /><i></i></label>
+            </div>
+            <div class="st-row">
+              <div><b>Show current task line</b></div>
+              <label class="sw"><input type="checkbox" id="s-task" /><i></i></label>
+            </div>
+          </div>
+        </section>
+
+        <!-- Quota & accounts -->
+        <section data-pane="quota" class="st-pane">
+          <h3>Quota &amp; accounts</h3>
+          <div class="st-group">
+            <div class="st-row"><div><b>GitHub Copilot accounts</b><small id="s-acct-hint"></small></div><button class="btn" id="s-acct-reload">Reload</button></div>
+            <div id="s-accounts" class="acct-list"></div>
+            <div class="st-row">
+              <div><b>Show AI credits as</b><small>Copilot AI credits from sessions and quota, or their cost.</small></div>
+              <div class="seg" id="s-credit-unit">
+                <button data-v="credits">Credits</button><button data-v="usd">US dollars</button>
+              </div>
+            </div>
+            <div class="st-row">
+              <div><b>Price per AI credit (USD)</b><small>Set the rate of your Copilot plan; used for the dollar view.</small></div>
+              <input type="number" id="s-usd-rate" class="num" min="0" step="0.001" />
+            </div>
+            <div class="st-row">
+              <div><b>Copilot rows in compact panel</b></div>
+              <div class="seg" id="s-cp-buckets">
+                <button data-v="premium">Premium only</button><button data-v="all">All</button>
+              </div>
+            </div>
+          </div>
+          <div class="st-group">
+            <div class="st-row"><div><b>Claude</b><small>Two independent sources.</small></div></div>
+            <div class="src-status" id="s-claude-status"></div>
+          </div>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Show local Claude consumption</b><small>5h block, today and 7-day token totals from transcripts.</small></div>
+              <label class="sw"><input type="checkbox" id="s-claude-local" /><i></i></label>
+            </div>
+          </div>
+        </section>
+
+        <!-- About -->
+        <section data-pane="about" class="st-pane">
+          <h3>About</h3>
+          <div class="st-group about">
+            <p><b>Scrooge</b> <span id="s-version"></span> — desktop monitor for AI coding agents.</p>
+            <p class="dim">Session data comes from the open-source <b>abtop</b> collector (MIT, Tae Hwan Jung) extended with GitHub Copilot. Copilot quota uses GitHub's internal <code>copilot_internal/user</code> endpoint and Claude limits use <code>api/oauth/usage</code>: both are undocumented and may change.</p>
+          </div>
+          <div class="st-group">
+            <div class="st-row">
+              <div><b>Updates</b><small id="s-upd-status">Signed releases from GitHub.</small></div>
+              <button class="btn" id="s-upd-check">Check for updates</button>
+            </div>
+            <div class="st-row hidden" id="s-upd-row">
+              <div><b id="s-upd-version"></b><small id="s-upd-notes"></small></div>
+              <button class="btn primary" id="s-upd-install">Install &amp; restart</button>
+            </div>
+            <div class="st-row">
+              <div><b>Check for updates automatically</b><small>At startup and every 6 hours.</small></div>
+              <label class="sw"><input type="checkbox" id="s-upd-auto" /><i></i></label>
+            </div>
+          </div>
+          <div class="st-group" id="s-paths"></div>
+          <div class="st-group">
+            <div class="st-row"><div><b>Keyboard</b></div></div>
+            <div class="keys">
+              <span><kbd>F</kbd> full screen</span><span><kbd>Esc</kbd> back / hide</span><span><kbd>R</kbd> refresh</span>
+              <span><kbd>S</kbd> settings</span><span><kbd>/</kbd> filter</span><span><kbd>↑</kbd><kbd>↓</kbd> select</span><span><kbd>Enter</kbd> expand</span>
+            </div>
+          </div>
+          <div class="st-group"><button class="btn danger" id="s-quit">Quit Scrooge</button></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

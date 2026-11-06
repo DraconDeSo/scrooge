@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **do not paste real prompts, tokens or private paths**.
+        For security issues use [private reporting](https://github.com/DraconDeSo/scrooge/security/advisories/new) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Scrooge version
+      description: Settings → About
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 11, Windows 10, macOS (Apple silicon), macOS (Intel), Linux (deb), Linux (rpm), Linux (AppImage)]
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Affected provider
+      multiple: true
+      options: [Claude Code, Codex CLI, OpenCode, GitHub Copilot, Gemini CLI, Grok Build, Not provider-specific]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start …
+        2. Open …
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs
+      description: Redact anything personal before attaching.
