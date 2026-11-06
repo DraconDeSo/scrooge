@@ -79,6 +79,8 @@ enum Provider {
     Github {
         owner: String,
         scope: GithubScope,
+        #[serde(default)]
+        legacy_premium_requests: bool,
     },
     Xai {
         team_id: String,
@@ -314,9 +316,18 @@ impl Account {
         match &self.source {
             Provider::Openai => self.openai(&agent, &credential, period),
             Provider::Anthropic => self.anthropic(&agent, &credential, period),
-            Provider::Github { owner, scope } => {
-                self.github(&agent, &credential, period, owner, *scope)
-            }
+            Provider::Github {
+                owner,
+                scope,
+                legacy_premium_requests,
+            } => self.github(
+                &agent,
+                &credential,
+                period,
+                owner,
+                *scope,
+                *legacy_premium_requests,
+            ),
             Provider::Xai { team_id } => self.xai(&agent, &credential, period, team_id),
             Provider::Google {
                 query_project,
@@ -484,6 +495,7 @@ impl Account {
         period: Period,
         owner: &str,
         scope: GithubScope,
+        legacy_premium_requests: bool,
     ) -> Result<Vec<BilledRow>, String> {
         if !identifier(owner) {
             return Err("Invalid GitHub billing owner".into());
@@ -493,9 +505,11 @@ impl Account {
             GithubScope::Organization => "organizations",
             GithubScope::Enterprise => "enterprises",
         };
-        let url = format!("https://api.github.com/{path}/{owner}/settings/billing/ai_credit/usage");
         let mut rows = Vec::new();
         for (day, full_month) in github_periods(period) {
+            let report = github_report(day, legacy_premium_requests);
+            let url =
+                format!("https://api.github.com/{path}/{owner}/settings/billing/{report}/usage");
             let mut query = vec![
                 ("year", day.year().to_string()),
                 ("month", day.month().to_string()),
@@ -672,6 +686,14 @@ fn identifier(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
+fn github_report(day: NaiveDate, legacy_premium_requests: bool) -> &'static str {
+    if legacy_premium_requests || (day.year(), day.month()) < (2026, 6) {
+        "premium_request"
+    } else {
+        "ai_credit"
+    }
+}
+
 fn google_query(
     period: Period,
     table: &str,
@@ -827,6 +849,15 @@ mod tests {
         assert_eq!(periods.len(), 4);
         assert_eq!(periods[2], (Period::date(ms("2026-09-01")), true));
         assert!(!periods[3].1);
+    }
+
+    #[test]
+    fn github_selects_its_billing_model_for_the_requested_date() {
+        let may = NaiveDate::from_ymd_opt(2026, 5, 31).unwrap();
+        let june = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        assert_eq!(github_report(may, false), "premium_request");
+        assert_eq!(github_report(june, false), "ai_credit");
+        assert_eq!(github_report(june, true), "premium_request");
     }
 
     #[test]
