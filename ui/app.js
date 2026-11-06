@@ -192,7 +192,10 @@ function computeAccountColors() {
 }
 function fmtCredits(cr) {
   cr = Number(cr) || 0;
-  if (state.ui.creditUnit === "usd") return "$" + (cr * (Number(state.ui.usdPerCredit) || 0)).toFixed(cr * state.ui.usdPerCredit < 10 ? 2 : 0);
+  if (state.ui.creditUnit === "usd") {
+    const equivalent = cr * (Number(state.ui.usdPerCredit) || 0);
+    return "≈$" + equivalent.toFixed(equivalent < 10 ? 2 : 0);
+  }
   return fmtNum(cr, cr < 10 ? 2 : 0) + " cr";
 }
 
