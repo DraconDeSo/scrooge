@@ -39,7 +39,9 @@
     "resources": {
       "../LICENSE": "licenses/Scrooge.txt",
       "../crates/abtop/LICENSE": "licenses/abtop.txt",
-      "../NOTICE.md": "licenses/NOTICE.md"
+      "../NOTICE.md": "licenses/NOTICE.md",
+      "../vendor/glib-0.18.5/LICENSE": "licenses/glib-LICENSE",
+      "../vendor/glib-0.18.5/COPYRIGHT": "licenses/glib-COPYRIGHT"
     },
     "category": "DeveloperTool",
     "shortDescription": "Desktop monitor for AI coding agents",

@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["crates/abtop", "src-tauri"]
+exclude = ["vendor/glib-0.18.5"]
+
+[patch.crates-io]
+glib = { path = "vendor/glib-0.18.5" }
+
+[profile.test.package.glib]
+opt-level = 2
 
 [profile.release]
 lto = "thin"

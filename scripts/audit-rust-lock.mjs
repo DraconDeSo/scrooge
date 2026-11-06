@@ -1,12 +1,18 @@
 import { readFile } from "node:fs/promises";
-
-// GTK 3 bindings required by Tauri 2 on Linux have no patched glib 0.18 release.
-// Remove this exact exception once the upstream Linux stack can move past 0.18.
-const existing = new Map([
-  ["glib@0.18.5", new Set(["GHSA-wrw7-89jp-8q8g", "RUSTSEC-2024-0429"])],
-]);
+import { createHash } from "node:crypto";
 
 const lock = await readFile(new URL("../Cargo.lock", import.meta.url), "utf8");
+const manifest = await readFile(new URL("../Cargo.toml", import.meta.url), "utf8");
+if (!/^glib = \{ path = "vendor\/glib-0\.18\.5" \}$/m.test(manifest) ||
+    !/^name = "glib"\r?\nversion = "0\.18\.5"\r?\ndependencies = \[/m.test(lock)) {
+  throw new Error("Expected the audited glib backport in Cargo's dependency graph.");
+}
+const iterator = await readFile(new URL("../vendor/glib-0.18.5/src/variant_iter.rs", import.meta.url), "utf8");
+const patched = createHash("sha256").update(iterator.replace(/\r\n/g, "\n")).digest("hex");
+if (patched !== "a0f5ee8acb8faa089bcdfbc9a57372609fce7654026ccef7d9a224d05a654ccc") {
+  throw new Error("The vendored RUSTSEC-2024-0429 patch does not match the reviewed source.");
+}
+console.log("Verified the vendored glib 0.18.5 backport for RUSTSEC-2024-0429.");
 const entries = [...lock.matchAll(/^name = "([^"]+)"\r?\nversion = "([^"]+)"\r?\nsource = "registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index"$/gm)];
 if (!entries.length) throw new Error("Cargo.lock has no crates.io packages.");
 const queries = entries.map(([, name, version]) => ({ package: { name, ecosystem: "crates.io" }, version }));
@@ -42,7 +48,6 @@ for (const [id, packages] of findings) {
   for (const pkg of packages) {
     const finding = pkg + " " + id;
     if (informational) console.warn("Informational advisory:", finding);
-    else if (existing.get(pkg)?.has(id)) console.warn("Known upstream dependency advisory:", finding);
     else {
       console.error("Vulnerable dependency:", finding);
       process.exitCode = 1;

@@ -18,6 +18,7 @@ const USAGE_SOURCES = {
   "open-code": "OpenCode",
   grok: "Grok Build",
   billing: "Billing imports",
+  "provider-billing": "Connected billing",
 };
 const TOKEN_FIELDS = ["input", "output", "cache_read", "cache_write"];
 
@@ -30,20 +31,24 @@ function localDate(date) {
 }
 
 function usageRange() {
+  const range = (start, end) => {
+    const utcDay = (date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+    return { start: +start, end: +end, billingStart: utcDay(start), billingEnd: utcDay(end) };
+  };
   const period = $("usage-period").value;
   if (period === "custom") {
     if (!$("usage-from").value || !$("usage-through").value) return null;
     const start = new Date($("usage-from").value + "T00:00:00");
     const end = new Date($("usage-through").value + "T00:00:00");
     end.setDate(end.getDate() + 1);
-    return +end > +start ? { start: +start, end: +end } : null;
+    return +end > +start ? range(start, end) : null;
   }
   const end = new Date();
   end.setHours(0, 0, 0, 0);
   end.setDate(end.getDate() + 1);
   const start = new Date(end);
   start.setDate(start.getDate() - (period === "today" ? 1 : Number(period)));
-  return { start: +start, end: +end };
+  return range(start, end);
 }
 
 function applyUsageView() {
@@ -115,7 +120,7 @@ function usageMetrics(rows, details) {
     const amount = new Intl.NumberFormat(undefined, {
       style: "currency", currency: charge.currency, currencyDisplay: "code", maximumFractionDigits: 6,
     }).format(charge.amount_micros / 1e6);
-    return `<span title="Imported billing amount">${charge.kind === "api" ? "API" : "Plan extra"} <b>${esc(amount)}</b></span>`;
+    return `<span title="Reported billing amount">${charge.kind === "api" ? "API" : "Plan extra"} <b>${esc(amount)}</b></span>`;
   }).join("");
   return `<span class="usage-metrics">
     ${requests ? `<span title="${esc(tokenDetail)}"><b>${fmtTok(total)}</b> tokens</span>` : '<span>Tokens unavailable</span>'}
@@ -138,7 +143,7 @@ function usageModelRows(rows) {
     (a.account || "").localeCompare(b.account || ""));
   return sorted.map((group) => {
     const { provider, model, account, source } = group[0];
-    const label = model || (source === "gemini-app" ? "Gemini App activity" : source === "billing" ? "Unassigned model" : "Unknown model");
+    const label = model || (source === "gemini-app" ? "Gemini App activity" : source.endsWith("billing") ? "Unassigned model" : "Unknown model");
     const sources = [...new Set(group.map((r) => USAGE_SOURCES[r.source]))].filter(Boolean).join(" · ");
     return `<div class="usage-model" ${idStyle(provider)}>
       <div><b>${esc(label)}</b><small>${esc([usageProviderName(provider), account, sources].filter(Boolean).join(" · "))}</small></div>
@@ -179,7 +184,7 @@ function renderUsage() {
     if (!source.readable) status = "Partial · some records could not be read";
     else if (source.earliest_ms) status = `${fmtNum(source.records_in_period)} in period · first record read ${new Date(source.earliest_ms).toLocaleDateString()}`;
     else if (source.files) status = "Logs found · no token or billing records";
-    return `<div class="usage-source"><b>${esc(USAGE_SOURCES[source.source])}</b><span>${esc(status)}</span></div>`;
+    return `<div class="usage-source"><b>${esc(source.label || USAGE_SOURCES[source.source])}</b><span>${esc(source.detail || status)}</span></div>`;
   }).join("");
   updateUsageQuotas();
 }

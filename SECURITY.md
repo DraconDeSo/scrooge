@@ -17,10 +17,10 @@ published once a patched release is available.
 
 ## Dependency checks
 
-CI checks the locked Rust packages against OSV and runs npm audit. On Linux, Tauri 2 still
-requires GTK 3 bindings that pin `glib` to the 0.18 series. CI reports
-[RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html) as a known
-upstream exception for `glib 0.18.5`. Revisit this exception when Tauri updates its Linux stack.
+CI checks the locked Rust packages against OSV and runs npm audit. The Linux
+build uses a [reviewable glib backport](vendor/glib-0.18.5/SCROOGE-BACKPORT.md)
+for RUSTSEC-2024-0429. A Linux regression test exercises both iterator directions
+with the patched crate compiled under optimization.
 
 ## How Scrooge handles sensitive data
 
@@ -28,14 +28,18 @@ upstream exception for `glib 0.18.5`. Revisit this exception when Tauri updates 
   the Scrooge settings folder. Historical usage keeps timestamps, project paths,
   model identifiers, token counts and supplied billing totals in memory. It discards
   message text. Prompts, tool arguments and replies are never sent anywhere.
-- **Network calls.** Only two optional, read-only calls leave the machine:
+- **Network calls.** Optional quota checks query the provider directly:
   - `GET https://api.github.com/copilot_internal/user` for Copilot quota, authenticated with
     a token obtained on demand from the GitHub CLI (`gh auth token`).
   - `GET https://api.anthropic.com/api/oauth/usage` for Claude plan limits, authenticated
     with the Claude Code CLI login (`~/.claude/.credentials.json`).
-  The update check contacts `github.com` to download `latest.json` and signed installers.
-- **No token storage.** Tokens are read at the moment of each request and kept only in
-  memory for that request. Scrooge never refreshes or rewrites another tool's credentials.
+  Automatic billing is opt-in. Scrooge calls the configured provider's fixed HTTPS
+  billing API for the selected dates and caches totals in memory. The Google Cloud
+  adapter starts a BigQuery job under the configured byte limit. The update check
+  contacts `github.com` to download `latest.json` and signed installers.
+- **No token storage.** Scrooge reads credentials on demand and keeps them in memory
+  for the request. Billing configuration stores credential names only. Google Cloud
+  can obtain a temporary access token through the installed Google Cloud CLI.
 - **Redaction.** Common secret patterns (API keys, GitHub tokens, bearer headers…) are
   redacted before transcript text is displayed.
 - **Signed updates.** Update packages are verified against the public key embedded in the
