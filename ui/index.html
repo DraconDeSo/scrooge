@@ -8,14 +8,12 @@
   <link rel="stylesheet" href="themes.css" />
 </head>
 <body class="mode-compact density-normal">
-  <header class="titlebar" data-tauri-drag-region>
-    <div class="brand" data-tauri-drag-region>
+  <header class="titlebar" id="titlebar" data-tauri-drag-region="deep">
+    <div class="brand">
       <span class="pulse" id="pulse"></span>
-      <span class="name" data-tauri-drag-region>scrooge</span>
-      <span class="counts" id="counts" data-tauri-drag-region></span>
+      <span class="name">scrooge</span>
+      <span class="counts" id="counts"></span>
     </div>
-    <div class="legend" id="legend" data-tauri-drag-region></div>
-    <div class="vitals" id="vitals" data-tauri-drag-region></div>
     <div class="actions">
       <button id="btn-settings" title="Settings (S)">⚙</button>
       <button id="btn-refresh" title="Refresh now (R)">⟳</button>
@@ -23,6 +21,8 @@
       <button id="btn-mode" title="Full screen (F)">⤢</button>
       <button id="btn-hide" title="Hide to tray (Esc)">✕</button>
     </div>
+    <div class="legend" id="legend"></div>
+    <div class="vitals" id="vitals"></div>
   </header>
 
   <div id="update-banner" class="update-banner hidden">
@@ -31,7 +31,40 @@
     <button id="update-later" title="Hide until next start">Later</button>
   </div>
 
-  <main id="app">
+  <main id="app" data-view="live">
+    <nav class="usage-toolbar" aria-label="Dashboard">
+      <div class="seg" id="usage-view" aria-label="View">
+        <button type="button" data-view="projects">Projects</button>
+        <button type="button" data-view="providers">Providers</button>
+        <button type="button" data-view="live" class="on" aria-pressed="true">Live sessions</button>
+      </div>
+      <div class="usage-range" id="usage-range">
+        <label>Period
+          <select id="usage-period">
+            <option value="today">Today</option>
+            <option value="7" selected>Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="custom">Custom dates</option>
+          </select>
+        </label>
+        <div id="usage-dates" class="usage-dates hidden">
+          <label>From <input id="usage-from" type="date" /></label>
+          <label>Through <input id="usage-through" type="date" /></label>
+        </div>
+      </div>
+    </nav>
+    <section class="panel p-usage" aria-label="Usage and billing">
+      <div class="usage-head">
+        <h2 id="usage-heading">Usage by project</h2>
+        <span id="usage-status" role="status"></span>
+      </div>
+      <div id="usage-rows"></div>
+      <details class="usage-coverage">
+        <summary>Data sources</summary>
+        <div id="usage-sources"></div>
+        <button type="button" class="btn" id="usage-imports-folder">Open usage imports folder</button>
+      </details>
+    </section>
     <section class="panel p-context">
       <h2>context</h2>
       <div class="ctx-grid">
@@ -201,7 +234,7 @@
           <h3>Sessions</h3>
           <div class="st-group">
             <div class="st-row">
-              <div><b>Sort by</b></div>
+              <div><b>Initial session order</b><small>Existing sessions keep their positions as usage updates. New sessions appear at the end.</small></div>
               <select id="s-sort">
                 <option value="recent">Most recent</option>
                 <option value="activity">Activity (working first)</option>
@@ -295,6 +328,7 @@
     </div>
   </div>
 
+  <script src="usage.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

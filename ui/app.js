@@ -46,6 +46,9 @@ const state = {
   expanded: null,
   filter: "",
   rate: [],
+  sessionOrder: new Map(),
+  sessionSort: null,
+  nextSessionRank: 0,
 };
 const RATE_POINTS = 200;
 const $ = (id) => document.getElementById(id);
@@ -92,6 +95,10 @@ function pctText(pct, digits = 0) {
 const SURFACE = { Cli: "", App: "·app", Ide: "·ide" };
 const STATUS = { Thinking: "think", Executing: "exec", Waiting: "wait", RateLimited: "rate", Unknown: "unknown", Done: "done" };
 function keyOf(s) { return s.agent_cli + ":" + s.session_id; }
+function liveSessions() {
+  return (state.snap?.sessions || []).filter((s) =>
+    s.agent_cli !== "codex" || s.model?.toLowerCase() !== "codex-auto-review");
+}
 function shortModel(m) { return String(m || "-").replace(/^claude-/, ""); }
 /** Disabled in Settings → Providers (the backend stops collecting it too). */
 function isHidden(cli) {
@@ -235,11 +242,22 @@ async function saveUi(patch) {
 }
 
 // ---------------------------------------------------------------- data
-function visibleSessions() {
-  let all = (state.snap?.sessions || []).filter((s) => !isHidden(s.agent_cli));
-  if (!state.ui.showIdle) all = all.filter((s) => s.status === "Thinking" || s.status === "Executing" || s.status === "RateLimited");
-  const f = state.filter.trim().toLowerCase();
-  if (f) all = all.filter((s) => [s.project_name, s.model, s.summary, s.agent_cli, s.git_branch, s.cwd].some((v) => String(v || "").toLowerCase().includes(f)));
+function orderedSessions() {
+  const all = liveSessions();
+  const now = Date.now();
+  if (state.sessionSort !== state.ui.sort) {
+    state.sessionSort = state.ui.sort;
+    state.sessionOrder.clear();
+    state.nextSessionRank = 0;
+  }
+  const keys = new Set(all.map(keyOf));
+  for (const [key, entry] of state.sessionOrder) {
+    if (!keys.has(key) && now - entry.lastSeen > 60_000) {
+      state.sessionOrder.delete(key);
+      if (state.selected === key) state.selected = null;
+      if (state.expanded === key) state.expanded = null;
+    }
+  }
   const act = (s) => (s.status === "Executing" ? 0 : s.status === "Thinking" ? 1 : s.status === "RateLimited" ? 2 : s.status === "Waiting" ? 3 : 4);
   const sorters = {
     recent: (a, b) => b.started_at_ms - a.started_at_ms,
@@ -248,7 +266,21 @@ function visibleSessions() {
     context: (a, b) => (b.context_percent || 0) - (a.context_percent || 0),
     tokens: (a, b) => b.total_tokens - a.total_tokens,
   };
-  return [...all].sort(sorters[state.ui.sort] || sorters.recent);
+  const sorter = sorters[state.ui.sort] || sorters.recent;
+  const added = all.filter((s) => !state.sessionOrder.has(keyOf(s)));
+  added.sort((a, b) => sorter(a, b) || keyOf(a).localeCompare(keyOf(b)));
+  for (const s of added) state.sessionOrder.set(keyOf(s), { rank: state.nextSessionRank++, lastSeen: now });
+  for (const s of all) state.sessionOrder.get(keyOf(s)).lastSeen = now;
+  return all.sort((a, b) => state.sessionOrder.get(keyOf(a)).rank - state.sessionOrder.get(keyOf(b)).rank);
+}
+function visibleSessions() {
+  const f = state.filter.trim().toLowerCase();
+  return orderedSessions().filter((s) => {
+    if (isHidden(s.agent_cli)) return false;
+    if (!state.ui.showIdle && !["Thinking", "Executing", "RateLimited"].includes(s.status)) return false;
+    return !f || [s.project_name, s.model, s.summary, s.agent_cli, s.git_branch, s.cwd]
+      .some((v) => String(v || "").toLowerCase().includes(f));
+  });
 }
 function currentRate() {
   const snap = state.snap;
@@ -258,7 +290,7 @@ function currentRate() {
 
 // ---------------------------------------------------------------- render
 function renderHeader() {
-  const all = (state.snap?.sessions || []).filter((s) => !isHidden(s.agent_cli));
+  const all = liveSessions().filter((s) => !isHidden(s.agent_cli));
   const active = all.filter((s) => s.status === "Thinking" || s.status === "Executing").length;
   $("pulse").classList.toggle("live", active > 0);
   $("counts").textContent = all.length ? `${all.length} session${all.length > 1 ? "s" : ""} · ${active} active` : "no agents";
@@ -383,6 +415,7 @@ function renderQuota() {
   }
   const html = parts.filter(Boolean).join("");
   $("quota").innerHTML = html || `<div class="empty">no quota sources</div>`;
+  updateUsageQuotas();
 }
 
 function sparkSvg(values) {
@@ -400,7 +433,7 @@ function cardHtml(s) {
   const sel = state.selected === k ? " sel" : "";
   const ctx = s.context_percent || 0;
   const expanded = state.mode === "compact" && state.expanded === k;
-  const task = state.ui.showTask && s.current_task ? `<div class="c-task">${esc(s.current_task)}</div>` : "";
+  const task = state.ui.showTask ? `<div class="c-task">${esc(s.current_task)}</div>` : "";
   const id = idOf(s);
   const cr = s.copilot ? ` · <b class="pc" title="${fmtNum(s.copilot.premium_requests, 2)} premium requests">◆${fmtCredits((s.copilot.nano_aiu || 0) / 1e9)}</b>` : "";
   return `<div class="card${sel}" ${idStyle(id)} data-k="${esc(k)}">
@@ -476,11 +509,20 @@ function detailHtml(s) {
 function renderSessions() {
   const list = visibleSessions();
   const box = $("sessions");
+  const keys = new Set(list.map(keyOf));
+  const top = box.getBoundingClientRect().top;
+  const anchor = box.scrollTop > 0 && [...box.children].find((card) =>
+    keys.has(card.dataset.k) && card.getBoundingClientRect().bottom > top);
+  const offset = anchor ? anchor.getBoundingClientRect().top : 0;
   if (!list.length) {
     const msg = !state.snap ? "collecting…" : state.filter ? "no match" : "No running agents. Start Claude Code, Codex, OpenCode or GitHub Copilot.";
     box.innerHTML = `<div class="empty">${msg}</div>`;
   } else {
     box.innerHTML = list.map(cardHtml).join("");
+    if (anchor) {
+      const card = [...box.children].find((node) => node.dataset.k === anchor.dataset.k);
+      if (card) box.scrollTop += card.getBoundingClientRect().top - offset;
+    }
   }
   if (state.mode === "full") {
     const det = $("detail");
@@ -496,7 +538,7 @@ function renderSessions() {
 }
 
 function renderFullPanels() {
-  const all = (state.snap?.sessions || []).filter((s) => !isHidden(s.agent_cli));
+  const all = liveSessions().filter((s) => !isHidden(s.agent_cli));
   $("ctx-bars").innerHTML = all.length
     ? all.map((s, i) => `<div class="cb" ${idStyle(idOf(s))}><span class="i">S${i + 1}</span><span class="p" title="${esc(idName(idOf(s)))} · ${esc(s.cwd)}">${esc(s.project_name)}</span>${bar(s.context_percent)}<span class="pc2">${pctText(s.context_percent || 0)}</span></div>`).join("")
     : `<div class="empty">—</div>`;
@@ -694,8 +736,6 @@ function onSnapshot(json) {
   state.rate.push(currentRate());
   if (state.rate.length > RATE_POINTS) state.rate.shift();
   pushRatePoints();
-  const all = state.snap.sessions || [];
-  if (state.selected && !all.some((s) => keyOf(s) === state.selected)) state.selected = null;
   render();
 }
 function setMode(mode) {
@@ -704,6 +744,8 @@ function setMode(mode) {
   document.body.classList.add("mode-" + mode);
   $("btn-mode").textContent = mode === "full" ? "⤡" : "⤢";
   $("btn-mode").title = mode === "full" ? "Back to compact panel (Esc)" : "Full screen (F)";
+  $("titlebar").classList.toggle("compact-drag", windowsPanel && mode === "compact");
+  applyUsageView();
   render();
 }
 function setOnTop(on) {
@@ -714,6 +756,45 @@ function setOnTop(on) {
 }
 
 // ------------------------------------------------------------ interaction
+const windowsPanel = /Windows/.test(navigator.userAgent);
+if (windowsPanel) {
+  const bar = $("titlebar");
+  // Bypass the native move loop so Windows Snap doesn't resize the widget.
+  bar.removeAttribute("data-tauri-drag-region");
+  bar.classList.add("compact-drag");
+  let drag;
+
+  bar.addEventListener("pointerdown", (e) => {
+    if (state.mode !== "compact" || drag || e.pointerType !== "mouse" || e.button !== 0 || e.target.closest("button")) return;
+    bar.setPointerCapture(e.pointerId);
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    e.preventDefault();
+  });
+
+  bar.addEventListener("pointermove", (e) => {
+    if (drag?.id !== e.pointerId || drag.ending || drag.pending) return;
+    if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) return;
+    const current = drag;
+    current.moved = true;
+    current.pending = invoke("drag_compact_panel", { x: current.x, y: current.y, phase: "move" })
+      .catch(console.error)
+      .finally(() => { current.pending = null; });
+  });
+
+  async function finishDrag(e, phase) {
+    if (drag?.id !== e.pointerId || drag.ending) return;
+    drag.ending = true;
+    if (drag.moved) {
+      await drag.pending;
+      await invoke("drag_compact_panel", { x: drag.x, y: drag.y, phase }).catch(console.error);
+    }
+    drag = null;
+  }
+
+  bar.addEventListener("pointerup", (e) => finishDrag(e, "drop"));
+  bar.addEventListener("lostpointercapture", (e) => finishDrag(e, "cancel"));
+}
+
 $("sessions").addEventListener("click", (e) => {
   const a = e.target.closest("[data-reveal]");
   if (a) { invoke("reveal", { path: a.dataset.reveal }).catch(() => {}); return; }
@@ -730,7 +811,11 @@ $("detail").addEventListener("click", (e) => {
   if (a) invoke("reveal", { path: a.dataset.reveal }).catch(() => {});
 });
 $("filter").addEventListener("input", (e) => { state.filter = e.target.value; renderSessions(); });
-$("btn-refresh").onclick = () => invoke("refresh");
+function refreshWidget() {
+  invoke("refresh");
+  if (usageView() !== "live") loadUsage();
+}
+$("btn-refresh").onclick = refreshWidget;
 $("btn-mode").onclick = () => invoke("toggle_mode");
 $("btn-hide").onclick = () => invoke("hide_window");
 $("btn-pin").onclick = () => invoke("set_always_on_top", { on: !state.onTop });
@@ -757,10 +842,11 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeSettings();
     return;
   }
+  if (usageView() !== "live" && ["ArrowDown", "ArrowUp", "Enter", "j", "k", "/"].includes(e.key)) return;
   switch (e.key) {
     case "Escape": state.mode === "full" ? invoke("set_mode", { mode: "compact" }) : invoke("hide_window"); break;
     case "f": case "F": invoke("toggle_mode"); break;
-    case "r": case "R": invoke("refresh"); break;
+    case "r": case "R": refreshWidget(); break;
     case "s": case "S": openSettings(); break;
     case "/": e.preventDefault(); $("filter").focus(); break;
     case "ArrowDown": case "j": moveSelection(1); break;
@@ -974,6 +1060,8 @@ $("s-providers").addEventListener("change", async (e) => {
   await patchSettings({ disabled_providers: [...set] });
   fillProviders();
   render();
+  renderUsage();
+  loadUsage();
 });
 $("s-storage-refresh").onclick = () => { invoke("refresh_storage"); $("s-storage-info").textContent = "Measuring…"; };
 $("storage-refresh").onclick = () => { invoke("refresh_storage"); $("storage").innerHTML = `<div class="empty">measuring…</div>`; };
@@ -1108,6 +1196,7 @@ $("update-later").onclick = () => { state.updateDismissed = true; $("update-bann
 $("s-upd-auto").onchange = (e) => patchSettings({ auto_update_check: e.target.checked });
 
 // ------------------------------------------------------------------ boot
+initUsage();
 (async function boot() {
   await listen("snapshot", (e) => onSnapshot(e.payload));
   await listen("quota", (e) => { state.quota = e.payload || []; computeAccountColors(); render(); });

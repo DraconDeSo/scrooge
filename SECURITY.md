@@ -24,8 +24,10 @@ upstream exception for `glib 0.18.5`. Revisit this exception when Tauri updates 
 
 ## How Scrooge handles sensitive data
 
-- **Local reads only.** Agent sessions are discovered from local files and process tables.
-  Prompts, tool arguments and replies are never sent anywhere.
+- **Local usage history.** Scrooge reads supported local provider logs and imports in
+  the Scrooge settings folder. Historical usage keeps timestamps, project paths,
+  model identifiers, token counts and supplied billing totals in memory. It discards
+  message text. Prompts, tool arguments and replies are never sent anywhere.
 - **Network calls.** Only two optional, read-only calls leave the machine:
   - `GET https://api.github.com/copilot_internal/user` for Copilot quota, authenticated with
     a token obtained on demand from the GitHub CLI (`gh auth token`).
