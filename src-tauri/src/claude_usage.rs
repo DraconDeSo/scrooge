@@ -110,26 +110,29 @@ pub fn fetch() -> ClaudeUsage {
         return u;
     }
     let resp = ureq::get("https://api.anthropic.com/api/oauth/usage")
-        .set("Authorization", &format!("Bearer {}", auth.token))
-        .set("anthropic-beta", "oauth-2025-04-20")
-        .set("Accept", "application/json")
-        .set("User-Agent", "scrooge-widget")
-        .timeout(std::time::Duration::from_secs(15))
+        .header("Authorization", format!("Bearer {}", auth.token))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("Accept", "application/json")
+        .header("User-Agent", "scrooge-widget")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .max_redirects(0)
+        .build()
         .call();
     let body: Value = match resp {
-        Ok(r) => match r.into_json() {
+        Ok(mut r) => match r.body_mut().read_json() {
             Ok(v) => v,
             Err(e) => {
                 u.error = Some(format!("invalid usage response: {e}"));
                 return u;
             }
         },
-        Err(ureq::Error::Status(401, _)) => {
+        Err(ureq::Error::StatusCode(401)) => {
             u.error =
                 Some("Claude rejected the token (401): run `claude` once to refresh it".into());
             return u;
         }
-        Err(ureq::Error::Status(code, _)) => {
+        Err(ureq::Error::StatusCode(code)) => {
             u.error = Some(format!("Anthropic API error {code}"));
             return u;
         }

@@ -526,12 +526,12 @@ fn get_process_cwd(pid: u32) -> Option<String> {
     // `lsof` does not exist on Windows; sysinfo reads the cwd from the
     // process PEB. Refresh just this one PID — this runs only for the
     // handful of opencode PIDs, once per tick.
-    let mut sys = System::new();
+    let mut sys = System::new().ok()?;
     let pid = Pid::from_u32(pid);
     sys.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
         false,
-        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+        ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
     );
     sys.process(pid)
         .and_then(|p| p.cwd())

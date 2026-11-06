@@ -121,16 +121,22 @@ pub fn get_process_info() -> HashMap<u32, ProcInfo> {
     // second tick onward returns real CPU%, instead of every Windows process
     // looking idle (which would break `has_active_descendant` and the
     // Working/Waiting threshold downstream).
-    static SYS: OnceLock<Mutex<sysinfo::System>> = OnceLock::new();
-    let sys_mutex = SYS.get_or_init(|| Mutex::new(sysinfo::System::new()));
+    static SYS: OnceLock<Mutex<Option<sysinfo::System>>> = OnceLock::new();
+    let sys_mutex = SYS.get_or_init(|| Mutex::new(None));
     let mut sys = sys_mutex
         .lock()
         .expect("process-info system mutex poisoned");
+    if sys.is_none() {
+        *sys = sysinfo::System::new().ok();
+    }
+    let Some(sys) = sys.as_mut() else {
+        return HashMap::new();
+    };
 
     sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
-        sysinfo::ProcessRefreshKind::new()
+        sysinfo::ProcessRefreshKind::nothing()
             .with_cpu()
             .with_memory()
             .with_cmd(sysinfo::UpdateKind::Always),

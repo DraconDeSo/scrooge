@@ -34,6 +34,13 @@
     "createUpdaterArtifacts": true,
     "publisher": "The Scrooge contributors",
     "copyright": "Copyright (c) 2026 The Scrooge contributors. MIT License.",
+    "license": "MIT",
+    "licenseFile": "../LICENSE",
+    "resources": {
+      "../LICENSE": "licenses/Scrooge.txt",
+      "../crates/abtop/LICENSE": "licenses/abtop.txt",
+      "../NOTICE.md": "licenses/NOTICE.md"
+    },
     "category": "DeveloperTool",
     "shortDescription": "Desktop monitor for AI coding agents",
     "longDescription": "Scrooge shows every AI coding agent running on your machine (Claude Code, Codex CLI, OpenCode, GitHub Copilot, Gemini CLI, Grok Build): sessions, read/written/cached tokens, context windows and quotas, in a compact panel or a full-screen dashboard.",

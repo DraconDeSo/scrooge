@@ -915,9 +915,15 @@ fn map_pid_to_libproc_open_paths(pids: &[u32]) -> HashMap<u32, ProcessOpenPaths>
 fn map_pid_to_sysinfo_open_paths(pids: &[u32]) -> HashMap<u32, ProcessOpenPaths> {
     use std::sync::{Mutex, OnceLock};
 
-    static SYS: OnceLock<Mutex<sysinfo::System>> = OnceLock::new();
-    let sys_mutex = SYS.get_or_init(|| Mutex::new(sysinfo::System::new()));
+    static SYS: OnceLock<Mutex<Option<sysinfo::System>>> = OnceLock::new();
+    let sys_mutex = SYS.get_or_init(|| Mutex::new(None));
     let mut sys = sys_mutex.lock().expect("open-paths system mutex poisoned");
+    if sys.is_none() {
+        *sys = sysinfo::System::new().ok();
+    }
+    let Some(sys) = sys.as_mut() else {
+        return HashMap::new();
+    };
 
     let pids_sys: Vec<sysinfo::Pid> = pids
         .iter()
@@ -927,10 +933,10 @@ fn map_pid_to_sysinfo_open_paths(pids: &[u32]) -> HashMap<u32, ProcessOpenPaths>
     sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&pids_sys),
         true,
-        sysinfo::ProcessRefreshKind::new().with_memory(),
+        sysinfo::ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always),
     );
 
-    // sysinfo 0.32 exposes cwd but not open file descriptors, so the `paths`
+    // sysinfo exposes cwd but not open file descriptors, so the `paths`
     // fallback used by lsof/libproc on other platforms isn't available here.
     // Claude session discovery still works via cwd plus the session-file index.
     let mut map: HashMap<u32, ProcessOpenPaths> = HashMap::new();

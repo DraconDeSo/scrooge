@@ -296,10 +296,15 @@ mod tests {
     #[test]
     fn reads_summary_and_signals() {
         let tmp = tempfile::tempdir().unwrap();
+        let (encoded_cwd, cwd) = if cfg!(windows) {
+            ("C%3A%5Crepos%5Cdemo", r"C:\repos\demo")
+        } else {
+            ("%2Fhome%2Fme%2Fdemo", "/home/me/demo")
+        };
         let dir = tmp
             .path()
             .join("sessions")
-            .join("C%3A%5Crepos%5Cdemo")
+            .join(encoded_cwd)
             .join("0193-abc");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("summary.json"), r#"{"info":{"id":"0193-abc"},"generated_title":"Refactor auth","current_model_id":"grok-code-2","created_at":"2026-11-06T09:00:00Z"}"#).unwrap();
@@ -317,7 +322,7 @@ mod tests {
             desktop_rollout_fd_map: HashMap::new(),
         };
         let s = c.build(&dir, 42, &shared);
-        assert_eq!(s.cwd, "C:\\repos\\demo");
+        assert_eq!(s.cwd, cwd);
         assert_eq!(s.project_name, "demo");
         assert_eq!(s.model, "grok-code-2");
         assert_eq!(s.turn_count, 7);
