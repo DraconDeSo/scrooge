@@ -220,21 +220,24 @@ pub fn fetch(login: Option<&str>) -> CopilotQuota {
         }
     };
     let resp = ureq::get("https://api.github.com/copilot_internal/user")
-        .set("Authorization", &format!("token {token}"))
-        .set("Accept", "application/json")
-        .set("User-Agent", "scrooge-widget")
-        .set("X-GitHub-Api-Version", "2025-04-01")
-        .timeout(std::time::Duration::from_secs(15))
+        .header("Authorization", format!("token {token}"))
+        .header("Accept", "application/json")
+        .header("User-Agent", "scrooge-widget")
+        .header("X-GitHub-Api-Version", "2025-04-01")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .max_redirects(0)
+        .build()
         .call();
     let body: Value = match resp {
-        Ok(r) => match r.into_json() {
+        Ok(mut r) => match r.body_mut().read_json() {
             Ok(v) => v,
             Err(e) => {
                 q.error = Some(format!("invalid quota response: {e}"));
                 return q;
             }
         },
-        Err(ureq::Error::Status(code, _)) => {
+        Err(ureq::Error::StatusCode(code)) => {
             q.error = Some(match code {
                 401 => "GitHub rejected the gh token (401)".to_string(),
                 403 | 404 => format!("no Copilot access for this account ({code})"),

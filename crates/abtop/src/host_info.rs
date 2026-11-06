@@ -168,7 +168,7 @@ mod windows_impl {
     /// reports 0. The collector tick (~2s) is well above
     /// `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`.
     pub struct WinSampler {
-        sys: System,
+        sys: Option<System>,
         /// False until the first refresh has happened; the first sample has
         /// no CPU delta yet, so report 0.0 (mirrors the Linux first-tick
         /// behavior where `prev` is `None`).
@@ -178,7 +178,7 @@ mod windows_impl {
     impl Default for WinSampler {
         fn default() -> Self {
             Self {
-                sys: System::new(),
+                sys: None,
                 primed: false,
             }
         }
@@ -194,21 +194,25 @@ mod windows_impl {
 
     impl WinSampler {
         pub fn sample(&mut self) -> Option<HostMetrics> {
-            self.sys.refresh_cpu_usage();
-            self.sys.refresh_memory();
+            if self.sys.is_none() {
+                self.sys = System::new().ok();
+            }
+            let sys = self.sys.as_mut()?;
+            sys.refresh_cpu_usage();
+            sys.refresh_memory();
 
             let cpu_pct = if self.primed {
-                self.sys.global_cpu_usage() as f64
+                sys.global_cpu_usage() as f64
             } else {
                 0.0
             };
             self.primed = true;
 
-            let total = self.sys.total_memory();
+            let total = sys.total_memory();
             if total == 0 {
                 return None;
             }
-            let mem_pct = (self.sys.used_memory() as f64 / total as f64) * 100.0;
+            let mem_pct = (sys.used_memory() as f64 / total as f64) * 100.0;
 
             // Windows has no native load average. Keep the wire shape stable
             // by reporting 0.0 rather than using sysinfo's approximation.

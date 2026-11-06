@@ -227,7 +227,9 @@ pub(crate) fn map_pid_to_rollouts(pids: &[u32]) -> HashMap<u32, Vec<PathBuf>> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut sys = sysinfo::System::new();
+        let Ok(mut sys) = sysinfo::System::new() else {
+            return map;
+        };
         let pids_sys: Vec<sysinfo::Pid> = pids
             .iter()
             .copied()
@@ -236,7 +238,7 @@ pub(crate) fn map_pid_to_rollouts(pids: &[u32]) -> HashMap<u32, Vec<PathBuf>> {
         sys.refresh_processes_specifics(
             sysinfo::ProcessesToUpdate::Some(&pids_sys),
             true,
-            sysinfo::ProcessRefreshKind::new().with_memory(),
+            sysinfo::ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always),
         );
         for &pid_u32 in pids {
             let pid = sysinfo::Pid::from(pid_u32 as usize);
