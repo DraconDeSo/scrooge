@@ -141,19 +141,14 @@ jobs:
           }
 
       - name: Build, sign and upload
+        if: runner.os != 'macOS' || (github.ref_type != 'tag' && !inputs.sign_platform)
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Update-signing key (see docs/releasing.md). Required.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform) && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform) && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform) && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform) && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform) && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform) && secrets.APPLE_TEAM_ID || '' }}
-        with:
+        with: &release_build
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Scrooge {0}', github.ref_name) || '' }}
           releaseBody: |
@@ -173,6 +168,21 @@ jobs:
           prerelease: false
           uploadUpdaterJson: ${{ github.ref_type == 'tag' }}
           args: --target ${{ matrix.target }} ${{ steps.windows-signing.outputs.args }}
+
+      - name: Build, sign and notarize with Developer ID
+        if: runner.os == 'macOS' && (github.ref_type == 'tag' || inputs.sign_platform)
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with: *release_build
 
       - name: Verify Authenticode
         if: runner.os == 'Windows' && (github.ref_type == 'tag' || inputs.sign_platform)
