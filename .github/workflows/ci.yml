@@ -38,7 +38,9 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked
       - name: UI syntax
-        run: node --check ui/app.js
+        run: |
+          node --check ui/app.js
+          node --check ui/usage.js
       - name: Theme contrast and provider colors
         run: node scripts/check-themes.mjs ui/themes.css
 

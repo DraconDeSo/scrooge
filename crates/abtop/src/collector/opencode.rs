@@ -322,6 +322,30 @@ impl OpenCodeCollector {
         serde_json::from_str(stdout.trim()).ok()
     }
 
+    /// Read assistant usage for a half-open epoch-millisecond range.
+    pub fn query_usage(&self, start: u64, end: u64) -> Option<Vec<Value>> {
+        if !self.db_path.exists() {
+            return Some(Vec::new());
+        }
+        if is_symlink(&self.db_path) {
+            return None;
+        }
+        self.run_query(&format!(
+            r#"
+SELECT m.time_created AS time_ms, s.directory AS cwd,
+  json_extract(m.data, '$.providerID') AS provider,
+  json_extract(m.data, '$.modelID') AS model,
+  json_extract(m.data, '$.tokens.input') AS input,
+  json_extract(m.data, '$.tokens.output') AS output,
+  json_extract(m.data, '$.tokens.cache.read') AS cache_read,
+  json_extract(m.data, '$.tokens.cache.write') AS cache_write
+FROM message m JOIN session s ON s.id = m.session_id
+WHERE m.time_created >= {start} AND m.time_created < {end}
+  AND json_extract(m.data, '$.role') = 'assistant'
+  AND json_type(m.data, '$.tokens') = 'object';"#
+        ))
+    }
+
     fn query_sessions(&self) -> Option<Vec<DbSession>> {
         let session_sql = format!(
             r#"

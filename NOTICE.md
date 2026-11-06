@@ -19,6 +19,17 @@ Scrooge is built with [Tauri](https://tauri.app) and many Rust crates and npm pa
 each under its own license (mostly MIT and/or Apache-2.0). Their license texts are available
 in the respective packages; `cargo tree` and `npm ls` list the full dependency graph.
 
+The desktop build uses code under the [Mozilla Public License 2.0](https://www.mozilla.org/en-US/MPL/2.0/).
+Source archives and license files for these components are available on crates.io:
+
+- [cssparser](https://crates.io/crates/cssparser)
+- [cssparser-macros](https://crates.io/crates/cssparser-macros)
+- [dtoa-short](https://crates.io/crates/dtoa-short)
+- [option-ext](https://crates.io/crates/option-ext)
+- [selectors](https://crates.io/crates/selectors)
+
+The source tag for each release contains the exact dependency versions in `Cargo.lock`.
+
 ## Trademarks
 
 Claude, Codex, OpenCode, GitHub Copilot, Gemini and Grok are trademarks of their respective

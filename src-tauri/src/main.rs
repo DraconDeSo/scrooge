@@ -7,6 +7,7 @@ mod quota;
 mod settings;
 mod storage;
 mod updates;
+mod usage;
 
 use claude_local::{ClaudeLocal, ClaudeLocalScanner};
 use claude_usage::ClaudeUsage;
@@ -20,7 +21,7 @@ use std::time::Duration;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, Wry,
+    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewWindow, Wry,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -49,6 +50,7 @@ struct Shared {
     local_tx: Mutex<Sender<()>>,
     storage: Mutex<storage::StorageReport>,
     storage_tx: Mutex<Sender<()>>,
+    usage: Mutex<usage::History>,
     on_top_item: Mutex<Option<CheckMenuItem<Wry>>>,
     shortcut_error: Mutex<Option<String>>,
 }
@@ -86,6 +88,31 @@ fn get_claude_local(state: State<AppState>) -> ClaudeLocal {
 #[tauri::command]
 fn get_storage(state: State<AppState>) -> storage::StorageReport {
     state.storage.lock().unwrap().clone()
+}
+
+#[tauri::command]
+async fn get_usage_report(
+    state: State<'_, AppState>,
+    start: u64,
+    end: u64,
+) -> Result<usage::Report, String> {
+    if start >= end {
+        return Err("Choose a valid date range.".into());
+    }
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = state.settings.lock().unwrap().clone();
+        state.usage.lock().unwrap().report(&settings, start, end)
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn open_usage_imports() -> Result<(), String> {
+    let dir = usage::imports_dir().ok_or("Settings folder unavailable.")?;
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    reveal(dir.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -261,6 +288,77 @@ fn toggle_mode(app: AppHandle) {
     );
 }
 
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum DragPhase {
+    Move,
+    Drop,
+    Cancel,
+}
+
+#[tauri::command]
+fn drag_compact_panel(w: WebviewWindow, x: f64, y: f64, phase: DragPhase) -> tauri::Result<()> {
+    let app = w.app_handle();
+    if *app.state::<AppState>().mode.lock().unwrap() != Mode::Compact || !w.is_visible()? {
+        return Ok(());
+    }
+
+    let cursor = w.cursor_position()?;
+    let scale = w.scale_factor()?;
+    let outer = w.outer_position()?;
+    let inner = w.inner_position()?;
+    let x = x + f64::from(inner.x - outer.x) / scale;
+    let y = y + f64::from(inner.y - outer.y) / scale;
+    let position = |scale: f64| {
+        PhysicalPosition::new(
+            (cursor.x - x * scale).round() as i32,
+            (cursor.y - y * scale).round() as i32,
+        )
+    };
+    if phase == DragPhase::Move {
+        return w.set_position(position(scale));
+    }
+
+    let monitor = if phase == DragPhase::Drop {
+        w.monitor_from_point(cursor.x, cursor.y)?
+    } else {
+        w.current_monitor()?
+    };
+    let Some(monitor) = monitor else {
+        save_compact_bounds(app);
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let target_scale = monitor.scale_factor();
+    let margin = (16.0 * target_scale).round() as i32;
+    let size = w.outer_size()?;
+    let pos = if phase == DragPhase::Drop {
+        position(target_scale)
+    } else {
+        outer
+    };
+    let bounds = snap_bounds(
+        &Bounds {
+            x: pos.x,
+            y: pos.y,
+            w: (size.width as f64 * target_scale / scale).round() as u32,
+            h: (size.height as f64 * target_scale / scale).round() as u32,
+        },
+        area.position,
+        area.size,
+        margin,
+    );
+    let full = phase == DragPhase::Drop && cursor.y <= f64::from(area.position.y + margin);
+    if !full {
+        set_bounds(&w, &bounds)?;
+    }
+    persist_compact_bounds(app, bounds);
+    if full {
+        apply_mode_on(app, Mode::Full, Some(monitor));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_always_on_top(state: State<AppState>) -> bool {
     state.settings.lock().unwrap().always_on_top
@@ -359,17 +457,30 @@ fn save_compact_bounds(app: &AppHandle) {
         return;
     }
     let Some(w) = main_window(app) else { return };
-    if !w.is_visible().unwrap_or(false) || w.is_minimized().unwrap_or(false) {
+    if !w.is_visible().unwrap_or(false)
+        || w.is_minimized().unwrap_or(false)
+        || w.is_maximized().unwrap_or(false)
+    {
         return;
     }
     if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
-        let mut s = state.settings.lock().unwrap();
-        s.compact_bounds = Some(Bounds {
-            x: pos.x,
-            y: pos.y,
-            w: size.width,
-            h: size.height,
-        });
+        persist_compact_bounds(
+            app,
+            Bounds {
+                x: pos.x,
+                y: pos.y,
+                w: size.width,
+                h: size.height,
+            },
+        );
+    }
+}
+
+fn persist_compact_bounds(app: &AppHandle, bounds: Bounds) {
+    let state = app.state::<AppState>();
+    let mut s = state.settings.lock().unwrap();
+    if s.compact_bounds.as_ref() != Some(&bounds) {
+        s.compact_bounds = Some(bounds);
         s.save();
     }
 }
@@ -404,20 +515,31 @@ fn default_compact_bounds(w: &WebviewWindow) -> Bounds {
     }
 }
 
-/// Fit saved bounds entirely inside the work area of the monitor that holds
-/// their center (or the nearest one). `None` when no monitor is available.
+/// Prefer the monitor containing the saved center, even near a seam between
+/// displays of different sizes. Fall back to the nearest edge if disconnected.
+fn monitor_for_bounds(w: &WebviewWindow, b: &Bounds) -> Option<Monitor> {
+    w.available_monitors()
+        .ok()?
+        .into_iter()
+        .min_by_key(|m| distance_to_area(b, *m.position(), *m.size()))
+}
+
+fn distance_to_area(b: &Bounds, pos: PhysicalPosition<i32>, size: PhysicalSize<u32>) -> u64 {
+    let dx = distance_to_span(i64::from(b.x) + i64::from(b.w) / 2, pos.x, size.width);
+    let dy = distance_to_span(i64::from(b.y) + i64::from(b.h) / 2, pos.y, size.height);
+    dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+}
+
+fn distance_to_span(center: i64, start: i32, length: u32) -> u64 {
+    let start = i64::from(start);
+    let end = start + i64::from(length.saturating_sub(1));
+    center.abs_diff(center.clamp(start, end))
+}
+
 fn fit_to_screen(w: &WebviewWindow, b: &Bounds) -> Option<Bounds> {
-    let monitors = w.available_monitors().ok()?;
-    let cx = b.x + b.w as i32 / 2;
-    let cy = b.y + b.h as i32 / 2;
-    let dist = |m: &tauri::Monitor| {
-        let a = m.work_area();
-        let dx = (cx - (a.position.x + a.size.width as i32 / 2)).abs() as i64;
-        let dy = (cy - (a.position.y + a.size.height as i32 / 2)).abs() as i64;
-        dx * dx + dy * dy
-    };
-    let m = monitors.iter().min_by_key(|m| dist(m))?;
-    Some(clamp_bounds(b, m.work_area().position, m.work_area().size))
+    let monitor = monitor_for_bounds(w, b)?;
+    let area = monitor.work_area();
+    Some(clamp_bounds(b, area.position, area.size))
 }
 
 fn clamp_bounds(b: &Bounds, pos: PhysicalPosition<i32>, size: PhysicalSize<u32>) -> Bounds {
@@ -433,24 +555,142 @@ fn clamp_bounds(b: &Bounds, pos: PhysicalPosition<i32>, size: PhysicalSize<u32>)
     }
 }
 
+fn snap_bounds(
+    b: &Bounds,
+    pos: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    margin: i32,
+) -> Bounds {
+    let mut b = clamp_bounds(b, pos, size);
+    b.x = snap_axis(b.x, pos.x, pos.x + (size.width - b.w) as i32, margin);
+    b.y = snap_axis(b.y, pos.y, pos.y + (size.height - b.h) as i32, margin);
+    b
+}
+
+fn snap_axis(value: i32, start: i32, end: i32, margin: i32) -> i32 {
+    let leading = value - start;
+    let trailing = end - value;
+    if leading <= margin && leading <= trailing {
+        start
+    } else if trailing <= margin {
+        end
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod window_placement_tests {
+    use super::*;
+
+    #[test]
+    fn snaps_to_work_area_edges_without_resizing() {
+        let bounds = Bounds {
+            x: -1272,
+            y: 192,
+            w: 400,
+            h: 600,
+        };
+        let snapped = snap_bounds(
+            &bounds,
+            PhysicalPosition::new(-1280, 0),
+            PhysicalSize::new(1280, 800),
+            16,
+        );
+        assert_eq!(
+            snapped,
+            Bounds {
+                x: -1280,
+                y: 200,
+                ..bounds
+            }
+        );
+    }
+
+    #[test]
+    fn prefers_the_monitor_containing_the_saved_center() {
+        let bounds = Bounds {
+            x: 0,
+            y: 30,
+            w: 400,
+            h: 600,
+        };
+        let wide_monitor = distance_to_area(
+            &bounds,
+            PhysicalPosition::new(0, 0),
+            PhysicalSize::new(3840, 2160),
+        );
+        let adjacent_monitor = distance_to_area(
+            &bounds,
+            PhysicalPosition::new(-1280, 0),
+            PhysicalSize::new(1280, 1024),
+        );
+        assert_eq!(wide_monitor, 0);
+        assert!(adjacent_monitor > wide_monitor);
+    }
+}
+
+fn set_bounds(w: &WebviewWindow, b: &Bounds) -> tauri::Result<()> {
+    // Moving between monitors may change the window size due to DPI scaling.
+    w.set_position(PhysicalPosition::new(b.x, b.y))?;
+    let outer = w.outer_size()?;
+    if outer == PhysicalSize::new(b.w, b.h) {
+        return Ok(());
+    }
+    // The saved rectangle includes the resize frame, but set_size takes the
+    // client size. Subtract the insets to avoid growing the panel on each drop.
+    let inner = w.inner_size()?;
+    w.set_size(PhysicalSize::new(
+        b.w.saturating_sub(outer.width.saturating_sub(inner.width)),
+        b.h.saturating_sub(outer.height.saturating_sub(inner.height)),
+    ))
+}
+
+fn compact_placement(w: &WebviewWindow, saved: Option<Bounds>) -> Bounds {
+    let b = saved.unwrap_or_else(|| default_compact_bounds(w));
+    let Some(monitor) = monitor_for_bounds(w, &b) else {
+        return b;
+    };
+    let area = monitor.work_area();
+    let mut b = clamp_bounds(&b, area.position, area.size);
+    // Older releases could save a native maximized window as compact.
+    if b.w == area.size.width && b.h == area.size.height {
+        b.w = (COMPACT_W as f64 * monitor.scale_factor()).round() as u32;
+        b.h = (COMPACT_H as f64 * monitor.scale_factor()).round() as u32;
+        b = clamp_bounds(&b, area.position, area.size);
+    }
+    b
+}
+
 fn apply_mode(app: &AppHandle, mode: Mode) {
+    apply_mode_on(app, mode, None);
+}
+
+fn apply_mode_on(app: &AppHandle, mode: Mode, monitor: Option<Monitor>) {
     let Some(w) = main_window(app) else { return };
     let state = app.state::<AppState>();
-    if mode == Mode::Full {
+    if mode == Mode::Full && monitor.is_none() {
         save_compact_bounds(app);
     }
     *state.mode.lock().unwrap() = mode;
-    let on_top = state.settings.lock().unwrap().always_on_top;
+    let (on_top, saved) = {
+        let s = state.settings.lock().unwrap();
+        (s.always_on_top, s.compact_bounds.clone())
+    };
     // Native fullscreen on an undecorated WebView2 window mis-sizes the
     // webview on scaled (HiDPI) monitors, pushing content off-screen. Use a
     // borderless window that covers the current monitor instead.
     let _ = w.set_fullscreen(false);
     match mode {
         Mode::Full => {
-            let monitor = w
-                .current_monitor()
-                .ok()
-                .flatten()
+            let monitor = monitor
+                .or_else(|| {
+                    if w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false) {
+                        w.current_monitor().ok().flatten()
+                    } else {
+                        saved.as_ref().and_then(|b| monitor_for_bounds(&w, b))
+                    }
+                })
                 .or_else(|| w.primary_monitor().ok().flatten());
             let _ = w.set_always_on_top(false);
             let _ = w.set_skip_taskbar(false);
@@ -465,14 +705,7 @@ fn apply_mode(app: &AppHandle, mode: Mode) {
             let _ = w.unmaximize();
             let _ = w.set_skip_taskbar(true);
             let _ = w.set_always_on_top(on_top);
-            let saved = state.settings.lock().unwrap().compact_bounds.clone();
-            let b = saved.unwrap_or_else(|| default_compact_bounds(&w));
-            let b = fit_to_screen(&w, &b).unwrap_or(b);
-            // Move first, then size: moving between monitors with different
-            // scaling makes Windows rescale the window, which would undo a
-            // size set before the move. Then re-check the real outer bounds.
-            let _ = w.set_position(PhysicalPosition::new(b.x, b.y));
-            let _ = w.set_size(PhysicalSize::new(b.w, b.h));
+            let _ = set_bounds(&w, &compact_placement(&w, saved));
             if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
                 let real = Bounds {
                     x: pos.x,
@@ -481,8 +714,7 @@ fn apply_mode(app: &AppHandle, mode: Mode) {
                     h: size.height,
                 };
                 if let Some(fixed) = fit_to_screen(&w, &real).filter(|f| *f != real) {
-                    let _ = w.set_position(PhysicalPosition::new(fixed.x, fixed.y));
-                    let _ = w.set_size(PhysicalSize::new(fixed.w, fixed.h));
+                    let _ = set_bounds(&w, &fixed);
                 }
             }
         }
@@ -787,6 +1019,7 @@ fn main() {
         local_tx: Mutex::new(local_tx),
         storage: Mutex::new(storage::StorageReport::default()),
         storage_tx: Mutex::new(storage_tx),
+        usage: Mutex::new(usage::History::default()),
         on_top_item: Mutex::new(None),
         shortcut_error: Mutex::new(None),
     });
@@ -818,6 +1051,8 @@ fn main() {
             get_claude_usage,
             get_claude_local,
             get_storage,
+            get_usage_report,
+            open_usage_imports,
             refresh_storage,
             refresh,
             list_accounts,
@@ -828,6 +1063,7 @@ fn main() {
             get_mode,
             set_mode,
             toggle_mode,
+            drag_compact_panel,
             get_always_on_top,
             set_always_on_top,
             hide_window,
@@ -838,6 +1074,10 @@ fn main() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            #[cfg(target_os = "windows")]
+            if let Some(w) = main_window(&handle) {
+                w.set_maximizable(false)?;
+            }
             let (on_top, start_mode, start_hidden) = {
                 let s = state.settings.lock().unwrap();
                 (s.always_on_top, s.start_mode.clone(), s.start_hidden)
