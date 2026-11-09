@@ -185,10 +185,11 @@ impl AntigravityCollector {
     }
 
     fn surface(path: &Path) -> LaunchSurface {
-        if path
-            .components()
-            .any(|part| part.as_os_str().to_string_lossy().eq_ignore_ascii_case("antigravity-ide"))
-        {
+        if path.components().any(|part| {
+            part.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("antigravity-ide")
+        }) {
             LaunchSurface::Ide
         } else {
             LaunchSurface::App
@@ -251,8 +252,16 @@ impl AgentCollector for AntigravityCollector {
                 cwd,
                 project_name,
                 started_at: state.started_at_ms,
-                status: if waiting { SessionStatus::Waiting } else { SessionStatus::Thinking },
-                model: if state.model.is_empty() { "Gemini".into() } else { state.model.clone() },
+                status: if waiting {
+                    SessionStatus::Waiting
+                } else {
+                    SessionStatus::Thinking
+                },
+                model: if state.model.is_empty() {
+                    "Gemini".into()
+                } else {
+                    state.model.clone()
+                },
                 effort: String::new(),
                 context_percent: (state.last_prompt_tokens as f64 / GEMINI_CONTEXT as f64 * 100.0)
                     .min(100.0),
@@ -304,7 +313,9 @@ mod tests {
 
     #[test]
     fn detects_main_antigravity_process_only() {
-        assert!(is_antigravity_command(r#"C:\Program Files\Antigravity\Antigravity.exe"#));
+        assert!(is_antigravity_command(
+            r#"C:\Program Files\Antigravity\Antigravity.exe"#
+        ));
         assert!(!is_antigravity_command(
             r#"C:\Program Files\Antigravity\Antigravity.exe --type=renderer"#
         ));

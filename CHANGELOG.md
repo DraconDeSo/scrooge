@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-09
+
 ### Added
 
 - Usage by model under each provider in `quota & usage`, for a selectable period.
@@ -55,5 +57,6 @@ All notable changes to this project are documented here. The format follows
 - Complete user manual (`docs/manual.md`) and updated high-resolution UI documentation screenshots.
 - Signed in-app updates from GitHub Releases.
 
-[Unreleased]: https://github.com/DraconDeSo/scrooge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DraconDeSo/scrooge/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/DraconDeSo/scrooge/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/DraconDeSo/scrooge/releases/tag/v0.1.0
