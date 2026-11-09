@@ -49,15 +49,15 @@ Switch between **Compact** and **Full screen** at any time by pressing **`F`**, 
 A frameless floating panel (400×600 px by default), kept above other windows (*Always on top* toggleable via `📌`):
 - **Dragging & Edge Snapping**: drag the panel by its title bar; on Windows it snaps cleanly to screen edges without triggering Windows Aero resize.
 - **Top-edge Full-Screen Drop**: drag and release the compact panel against the top edge of any monitor to expand it into **Full screen** mode on that monitor.
-- **Layout**: displays the view switcher (`Projects | Providers | Live sessions` + `⤓ Export`), the **quota & usage** summary strip, and the list of active **sessions** (click any card to expand its details).
+- **Layout**: displays the view switcher (`Projects | Providers | Live sessions` + `⤓ Export`), the **quota & usage** summary strip, and the tracked **sessions** (click any card to expand its details).
 
 ### Full-Screen Dashboard (`Full screen`)
 A `btop`-inspired dashboard covering the current monitor with 7 panels:
 1. **`context`**: real-time **token rate** (`tok/s`) chart stacked **by provider** or **by project** (click legend items to show/hide series) alongside context-window usage bars for every active session (`S1`, `S2`, …).
-2. **`quota & usage`**: quota bars for every GitHub Copilot account, Claude 5h/7d plan limits (plus local 5-hour block, 24h hourly histogram, and 7-day token totals), and Codex rate limits.
+2. **`quota & usage`**: quota bars for every GitHub Copilot account, Claude 5h/7d plan limits (plus local 5-hour block, 24h hourly histogram, and 7-day token totals), Codex rate limits, and each provider's usage by model for the selected period.
 3. **`tokens`**: aggregate or selected-session token counters (`input`, `output`, `cache read`, `cache write`, turns, and average tokens/turn) with a provider split bar and turn sparkline.
 4. **`projects`**: active Git repositories showing the current branch, added/deleted line counts (`+added -deleted`), and colored provider dots indicating which agents are working in each project.
-5. **`storage`**: disk space used by each provider across sessions, caches, desktop app data, and bundled runtimes. Click any path to reveal it in File Explorer / Finder.
+5. **`storage`**: disk space used by each provider across sessions, isolated Git worktrees (`copilot-worktrees`, `~/.copilot/workspaces`, `~/.codex/worktrees`, `~/.claude/worktrees`), caches, desktop app data, and bundled runtimes, streamed progressively as each folder is measured so the UI opens immediately. Click any path to reveal it in File Explorer / Finder.
 6. **`ports`**: listening TCP ports opened by agent child processes (e.g., dev servers on `:3000`, `:8000`) plus **orphan ports** left behind by ended sessions.
 7. **`sessions` + `detail`**: session table on the left and a comprehensive inspector pane on the right (PID, clickable working directory, branch, model, CLI version, context %, process memory, Copilot usage boxes, recent tool calls, child processes, and latest chat turns).
 
@@ -68,15 +68,14 @@ A `btop`-inspired dashboard covering the current monitor with 7 panels:
 Use the top toolbar to switch between three views in both Compact and Full-screen modes:
 
 ### 3.1 `Live sessions`
-Shows all coding agents currently running or waiting for input on your machine:
+Tracks coding agent sessions as they are detected on your machine.
 - Each session card carries its provider badge and color (`CC` Claude Code CLI, `CC·app` Claude Desktop, `CC·ide` Claude IDE, `CD` Codex, `OC` OpenCode, `GH` Copilot CLI, `GH·app` Copilot Desktop, `GM` Gemini CLI, `GK` Grok).
-- **Status indicators**:
-  - `● exec` (blinking green): a tool call is currently executing.
-  - `◐ think`: the model is generating a response.
-  - `○ wait`: idle, waiting for user input.
-  - `⏳ rate`: waiting on a provider rate limit.
-  - `? unknown`: recent session whose OS process could not be confirmed.
-- **Quick filter (`/`)**: press `/` to filter sessions by project name, model, provider, branch, or current task.
+- **Status order.** Sessions waiting for input appear first, followed by other states such as `Running tools`, `Thinking`, `Rate limited`, and `Unconfirmed`, then sessions that disappeared from the live scan (`Stopped`). Confirmed completions stay at the bottom with a green check.
+- **Jump to completed.** When the list scrolls, the `↓ ✓ N` button above it jumps to the completed sessions; once there it becomes `↑ top`.
+- **Usage by model.** Under each provider in `quota & usage`, tokens and requests are split by model for the period chosen in the panel heading. Hover a row for the input, output and cache split.
+- **Tokens per call.** A session's details list its last 40 model calls for Claude Code, Codex and Copilot, as recent or heaviest first: input, output and cache split, plus the tools each call requested. Providers report one count per response, so thinking, text and tool requests are not split, and a tool's result is paid as input of the next call.
+- **Clear tracking.** Click `×` on a card or `Clear all` above the list. Sessions return on the next scan if they are working, or when work resumes.
+- **Quick filter (`/`).** Press `/` to filter sessions by project name, model, provider, branch, status, or current task.
 
 ### 3.2 `Projects` (Historical usage by project)
 Groups historical token consumption and billing charges by **local project** (automatically unifying linked Git worktrees under their main repository checkout):
@@ -189,6 +188,6 @@ Open **Settings (`⚙` or `S`)** to configure 6 sections:
    - **Provider colors**: customize the color of any provider or Copilot account (Scrooge automatically prevents picking two colors that are too visually similar).
    - **Warning & Critical thresholds**: percentages at which context and quota indicators turn yellow or red (`⚠`).
 3. **Providers**: enable or disable individual providers. Disabled providers are completely skipped during disk scans and network quota checks.
-4. **Sessions**: initial session sort order (*Most recent*, *Activity*, *Provider*, *Context usage*, *Tokens*) and toggles for idle sessions, chat history in details, and the current task line.
+4. **Sessions**: initial sort order within each status group (*Most recent*, *Activity*, *Provider*, *Context usage*, *Tokens*) and toggles for idle sessions, chat history in details, and the current task line.
 5. **Quota & accounts**: toggle visibility for individual GitHub Copilot accounts, switch AI credits between `Credits` and `USD estimate` (with configurable USD rate per credit), and inspect Claude data source status.
 6. **About**: current version, signed GitHub Release update checker, quick **Open** buttons for configuration/data folders, keyboard reference, and **Quit Scrooge**.

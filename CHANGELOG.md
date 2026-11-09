@@ -6,14 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Usage by model under each provider in `quota & usage`, for a selectable period.
+- Button above the session list to jump to completed sessions and back.
+- Tokens per model call in a session's details for Claude Code, Codex and Copilot, with the
+  input, output and cache split and the tools each call requested.
+
+### Changed
+
+- Completed sessions now stay at the bottom of the list with a green check.
+
 ### Fixed
 
+- Live Claude Code token and turn totals no longer count a response once per transcript
+  line; they had been inflated, by about three times in one measured session.
 - Count Gemini usage from live Antigravity desktop and IDE transcripts, without requiring
   a provider CLI login.
 - Keep cached Codex allowance visible after Codex exits and show a local usage fallback for
   every running provider when an official quota is unavailable.
 - Show Copilot session consumption even when GitHub CLI is not installed, and avoid
   double-counting Antigravity history when default and configured Gemini homes coincide.
+- The compact header no longer clips or breaks its text: name and buttons sit on the first
+  row, session counts and token totals on the second.
 
 ## [0.1.0]
 

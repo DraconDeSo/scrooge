@@ -1,7 +1,8 @@
 use super::process::{self, ProcInfo};
 use crate::model::{
-    AgentSession, ChatMessage, ChatRole, ChildProcess, FileAccess, FileOp, LaunchSurface,
-    RateLimitInfo, SessionStatus, ToolCall, MAX_CHAT_MESSAGES, MAX_FILE_ACCESSES,
+    push_token_call, AgentSession, ChatMessage, ChatRole, ChildProcess, FileAccess, FileOp,
+    LaunchSurface, RateLimitInfo, SessionStatus, TokenCall, ToolCall, MAX_CHAT_MESSAGES,
+    MAX_FILE_ACCESSES,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -272,8 +273,7 @@ impl CodexCollector {
             }
         }
 
-        // Recently finished sessions: scan today's JSONL files not owned by any running process.
-        // This ensures Codex sessions transition to Done instead of vanishing.
+        // Scan recent rollouts with no known owner for explicit completion events.
         if let Some(recent_dir) = Self::today_session_dir(&self.sessions_dir) {
             if let Ok(entries) = fs::read_dir(&recent_dir) {
                 for entry in entries.flatten() {
@@ -329,7 +329,9 @@ impl CodexCollector {
                                 self.last_rate_limit = Some(new_rl);
                             }
                         }
-                        sessions.push(session);
+                        if session.status == SessionStatus::Done {
+                            sessions.push(session);
+                        }
                     }
                 }
             }
@@ -556,7 +558,7 @@ impl CodexCollector {
         // Mirrors Claude: trust the trailing-event-is-user signal alone.
         // Codex tool outputs flow through response_item, not user_message,
         // so model_generating only flips on real prompts.
-        let status = if process_ctx.unknown_process_owner {
+        let status = if process_ctx.unknown_process_owner || (!pid_alive && !result.task_complete) {
             SessionStatus::Unknown
         } else if !pid_alive || (process_ctx.is_exec && result.task_complete) {
             SessionStatus::Done
@@ -668,6 +670,7 @@ impl CodexCollector {
                 pending_since_ms: result.pending_since_ms,
                 thinking_since_ms: result.thinking_since_ms,
                 file_accesses: result.file_accesses,
+                token_calls: result.token_calls,
                 copilot: None,
                 config_root: super::abbrev_path(
                     self.sessions_dir
@@ -899,6 +902,8 @@ struct CodexJSONLResult {
     rate_limit: Option<RateLimitInfo>,
     /// Timeline of standard and custom tool calls extracted from response items.
     tool_calls: Vec<ToolCall>,
+    /// Token usage per model call, with the tools each call requested.
+    token_calls: Vec<TokenCall>,
     /// Earliest start timestamp among currently open tool calls.
     pending_since_ms: u64,
     /// True when an open tool call is explicitly waiting for the user.
@@ -1249,11 +1254,16 @@ fn parse_codex_jsonl(path: &Path) -> Option<CodexJSONLResult> {
         token_history: Vec::new(),
         rate_limit: None,
         tool_calls: Vec::new(),
+        token_calls: Vec::new(),
         pending_since_ms: 0,
         waiting_for_user: false,
         thinking_since_ms: 0,
         file_accesses: Vec::new(),
     };
+    // Tools already attached to a model call, and the session totals when the
+    // last call was recorded: Codex can repeat a token_count without new usage.
+    let mut tools_attached = 0usize;
+    let mut last_call_totals: Option<(u64, u64, u64)> = None;
     let mut call_indices: HashMap<String, usize> = HashMap::new();
     let mut call_starts: HashMap<String, u64> = HashMap::new();
     let mut call_names: HashMap<String, String> = HashMap::new();
@@ -1394,6 +1404,44 @@ fn parse_codex_jsonl(path: &Path) -> Option<CodexJSONLResult> {
                             result.last_context_tokens = inp;
                             if result.token_history.len() < 10_000 {
                                 result.token_history.push(inp + out);
+                            }
+                            let totals = (
+                                result.total_input,
+                                result.total_output,
+                                result.total_cache_read,
+                            );
+                            if last_call_totals != Some(totals) {
+                                last_call_totals = Some(totals);
+                                let cached = last["cached_input_tokens"]
+                                    .as_u64()
+                                    .or_else(|| last["cache_read_input_tokens"].as_u64())
+                                    .unwrap_or(0);
+                                let mut call = TokenCall {
+                                    id: None,
+                                    at_ms: val["timestamp"]
+                                        .as_str()
+                                        .and_then(|ts| {
+                                            chrono::DateTime::parse_from_rfc3339(ts).ok()
+                                        })
+                                        .map(|dt| dt.timestamp_millis().max(0) as u64)
+                                        .unwrap_or(0),
+                                    model: result.model.clone(),
+                                    input: inp.saturating_sub(cached),
+                                    output: out,
+                                    cache_read: cached,
+                                    cache_write: 0,
+                                    reasoning: last["reasoning_output_tokens"]
+                                        .as_u64()
+                                        .unwrap_or(0),
+                                    tools: Vec::new(),
+                                };
+                                // Tool items are logged before the token_count of
+                                // the response that requested them.
+                                for tool in &result.tool_calls[tools_attached..] {
+                                    call.add_tool(&tool.name, &tool.arg);
+                                }
+                                tools_attached = result.tool_calls.len();
+                                push_token_call(&mut result.token_calls, call);
                             }
                         }
                         // Context window may also appear inside info
@@ -2014,6 +2062,35 @@ mod tests {
     }
 
     #[test]
+    fn token_calls_attach_earlier_tools_and_skip_repeated_counts() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let first_count = r#"{"type":"event_msg","timestamp":"2026-03-28T15:01:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"output_tokens":200,"cached_input_tokens":100,"total_tokens":700},"last_token_usage":{"input_tokens":50,"output_tokens":20,"cached_input_tokens":10,"reasoning_output_tokens":5,"total_tokens":70}}}}"#;
+        write_lines(
+            &mut file,
+            &[
+                SESSION_META,
+                r#"{"type":"response_item","timestamp":"2026-03-28T15:00:59Z","payload":{"type":"function_call","name":"shell","call_id":"c1","arguments":"{\"command\":[\"ls\"]}"}}"#,
+                first_count,
+                first_count,
+                r#"{"type":"event_msg","timestamp":"2026-03-28T15:02:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":600,"output_tokens":230,"cached_input_tokens":150,"total_tokens":830},"last_token_usage":{"input_tokens":100,"output_tokens":30,"cached_input_tokens":50,"total_tokens":130}}}}"#,
+            ],
+        );
+
+        let result = parse_codex_jsonl(file.path()).unwrap();
+
+        assert_eq!(result.token_calls.len(), 2);
+        let first = &result.token_calls[0];
+        assert_eq!(first.input, 40);
+        assert_eq!(first.cache_read, 10);
+        assert_eq!(first.output, 20);
+        assert_eq!(first.reasoning, 5);
+        assert_eq!(first.tools.len(), 1);
+        assert!(first.tools[0].starts_with("shell"));
+        assert_eq!(result.token_calls[1].input, 50);
+        assert!(result.token_calls[1].tools.is_empty());
+    }
+
+    #[test]
     fn test_parse_codex_token_count() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         write_lines(
@@ -2619,6 +2696,36 @@ mod tests {
 
         assert_eq!(session.status, SessionStatus::Done);
         assert_eq!(session.current_tasks, vec!["finished".to_string()]);
+    }
+
+    #[test]
+    fn test_codex_unowned_rollout_requires_completion_event_to_be_done() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write_lines(
+            &mut file,
+            &[
+                SESSION_META,
+                r#"{"type":"event_msg","timestamp":"2026-03-28T15:01:00Z","payload":{"type":"task_started"}}"#,
+            ],
+        );
+        let collector = CodexCollector::new();
+        let process_ctx = CodexProcessContext {
+            pid: None,
+            is_exec: false,
+            owns_process_tree: false,
+            unknown_process_owner: false,
+        };
+        let (session, _) = collector
+            .load_session_with_rate_limit(
+                process_ctx,
+                file.path(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(session.status, SessionStatus::Unknown);
     }
 
     #[test]

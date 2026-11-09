@@ -281,8 +281,10 @@ fn settings_view(app: &AppHandle) -> SettingsView {
 }
 
 #[tauri::command]
-fn get_settings(app: AppHandle) -> SettingsView {
-    settings_view(&app)
+async fn get_settings(app: AppHandle) -> Result<SettingsView, String> {
+    tauri::async_runtime::spawn_blocking(move || settings_view(&app))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Merge a settings patch, persist it and apply side effects.
@@ -913,7 +915,7 @@ fn spawn_monitor(app: AppHandle, state: AppState, rx: mpsc::Receiver<()>) {
                 }
                 monitor.tick_no_summaries();
                 let visible = is_window_visible(&app);
-                let snap = monitor.to_snapshot(tick.as_millis() as u64);
+                let snap = monitor.to_tracking_snapshot(tick.as_millis() as u64);
                 if let Ok(json) = serde_json::to_string(&snap) {
                     *state.snapshot.lock().unwrap() = json.clone();
                     if visible {
@@ -936,33 +938,36 @@ fn spawn_monitor(app: AppHandle, state: AppState, rx: mpsc::Receiver<()>) {
 fn spawn_quota(app: AppHandle, state: AppState, rx: mpsc::Receiver<()>) {
     std::thread::Builder::new()
         .name("quota".into())
-        .spawn(move || loop {
-            let (hidden, minutes, copilot_on, claude_on) = {
-                let s = state.settings.lock().unwrap();
-                (
-                    s.hidden_copilot_accounts.clone(),
-                    s.quota_minutes,
-                    s.provider_enabled("copilot"),
-                    s.provider_enabled("claude"),
-                )
-            };
-            // Disabled providers make no network calls.
-            let q = if copilot_on {
-                quota::fetch_all(&hidden)
-            } else {
-                Vec::new()
-            };
-            *state.quota.lock().unwrap() = q.clone();
-            let _ = app.emit("quota", q);
-            let c = if claude_on {
-                claude_usage::fetch()
-            } else {
-                ClaudeUsage::default()
-            };
-            *state.claude.lock().unwrap() = c.clone();
-            let _ = app.emit("claude-usage", c);
-            if !wait(&rx, Duration::from_secs(minutes * 60)) {
-                break;
+        .spawn(move || {
+            let _ = wait(&rx, Duration::from_millis(250));
+            loop {
+                let (hidden, minutes, copilot_on, claude_on) = {
+                    let s = state.settings.lock().unwrap();
+                    (
+                        s.hidden_copilot_accounts.clone(),
+                        s.quota_minutes,
+                        s.provider_enabled("copilot"),
+                        s.provider_enabled("claude"),
+                    )
+                };
+                // Disabled providers make no network calls.
+                let q = if copilot_on {
+                    quota::fetch_all(&hidden)
+                } else {
+                    Vec::new()
+                };
+                *state.quota.lock().unwrap() = q.clone();
+                let _ = app.emit("quota", q);
+                let c = if claude_on {
+                    claude_usage::fetch()
+                } else {
+                    ClaudeUsage::default()
+                };
+                *state.claude.lock().unwrap() = c.clone();
+                let _ = app.emit("claude-usage", c);
+                if !wait(&rx, Duration::from_secs(minutes * 60)) {
+                    break;
+                }
             }
         })
         .expect("spawn quota thread");
@@ -972,6 +977,7 @@ fn spawn_claude_local(app: AppHandle, state: AppState, rx: mpsc::Receiver<()>) {
     std::thread::Builder::new()
         .name("claude-local".into())
         .spawn(move || {
+            let _ = wait(&rx, Duration::from_millis(180));
             let mut scanner = ClaudeLocalScanner::new();
             loop {
                 let enabled = state.settings.lock().unwrap().provider_enabled("claude");
@@ -995,13 +1001,32 @@ const STORAGE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 fn spawn_storage(app: AppHandle, state: AppState, rx: mpsc::Receiver<()>) {
     std::thread::Builder::new()
         .name("storage".into())
-        .spawn(move || loop {
-            let settings = state.settings.lock().unwrap().clone();
-            let report = storage::scan(|p| settings.provider_enabled(p));
-            *state.storage.lock().unwrap() = report.clone();
-            let _ = app.emit("storage", report);
-            if !wait(&rx, STORAGE_INTERVAL) {
-                break;
+        .spawn(move || {
+            // Let the window open and WebView paint before walking gigabytes on disk.
+            let _ = wait(&rx, Duration::from_millis(350));
+            loop {
+                {
+                    let mut st = state.storage.lock().unwrap();
+                    st.scanning = true;
+                    if is_window_visible(&app) {
+                        let _ = app.emit("storage", st.clone());
+                    }
+                }
+                let settings = state.settings.lock().unwrap().clone();
+                let report = storage::scan_progressive(
+                    |p| settings.provider_enabled(p),
+                    |partial| {
+                        *state.storage.lock().unwrap() = partial.clone();
+                        if is_window_visible(&app) {
+                            let _ = app.emit("storage", partial);
+                        }
+                    },
+                );
+                *state.storage.lock().unwrap() = report.clone();
+                let _ = app.emit("storage", report);
+                if !wait(&rx, STORAGE_INTERVAL) {
+                    break;
+                }
             }
         })
         .expect("spawn storage thread");
@@ -1090,7 +1115,10 @@ fn main() {
         refresh_tx: Mutex::new(refresh_tx),
         quota_tx: Mutex::new(quota_tx),
         local_tx: Mutex::new(local_tx),
-        storage: Mutex::new(storage::StorageReport::default()),
+        storage: Mutex::new(storage::StorageReport {
+            scanning: true,
+            ..Default::default()
+        }),
         storage_tx: Mutex::new(storage_tx),
         usage: Mutex::new(usage::History::default()),
         on_top_item: Mutex::new(None),
@@ -1157,6 +1185,17 @@ fn main() {
                 let s = state.settings.lock().unwrap();
                 (s.always_on_top, s.start_mode.clone(), s.start_hidden)
             };
+            let mode = if start_mode == "full" {
+                Mode::Full
+            } else {
+                Mode::Compact
+            };
+            // Open the UI window immediately before starting tray/shortcut/background workers.
+            if launched_by_autostart && start_hidden {
+                *state.mode.lock().unwrap() = mode;
+            } else {
+                apply_mode(&handle, mode);
+            }
             let item = build_tray(&handle, on_top)?;
             *state.on_top_item.lock().unwrap() = Some(item);
             register_shortcut(&handle);
@@ -1171,16 +1210,6 @@ fn main() {
                     .unwrap()
                     .auto_update_check
             });
-            let mode = if start_mode == "full" {
-                Mode::Full
-            } else {
-                Mode::Compact
-            };
-            if launched_by_autostart && start_hidden {
-                *state.mode.lock().unwrap() = mode;
-            } else {
-                apply_mode(&handle, mode);
-            }
             Ok(())
         })
         .on_window_event(|window, event| {

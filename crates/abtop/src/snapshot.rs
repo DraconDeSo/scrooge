@@ -14,8 +14,8 @@ use crate::app::App;
 use crate::collector::mcp::ACTIVE_MTIME_SECS;
 use crate::host_info::{AgentAggregate, HostMetrics};
 use crate::model::{
-    ChatRole, ChildProcess, CopilotUsage, LaunchSurface, OrphanPort, RateLimitInfo, SessionStatus,
-    MAX_CHAT_MESSAGES,
+    AgentSession, ChatRole, ChildProcess, CopilotUsage, LaunchSurface, OrphanPort, RateLimitInfo,
+    SessionStatus, MAX_CHAT_MESSAGES,
 };
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,6 +41,9 @@ pub struct Snapshot {
     pub interval_ms: u64,
     /// Live agent sessions, newest first (same order as the TUI).
     pub sessions: Vec<SessionView>,
+    /// Confirmed completions for consumers that display a tracking list.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub completed_sessions: Vec<SessionView>,
     /// Account-level rate limits (Claude, Codex, …).
     pub rate_limits: Vec<RateLimitInfo>,
     /// Ports left open by processes whose parent session has ended. Empty on a
@@ -69,6 +72,27 @@ pub struct ToolCallView {
     pub arg: String,
     /// Observed duration in milliseconds; `0` when unknown.
     pub duration_ms: u64,
+}
+
+/// Tokens used by one call to the model (detail view only).
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenCallView {
+    /// Unix-epoch milliseconds of the call; `0` when unknown.
+    pub at_ms: u64,
+    /// Model that served the call.
+    pub model: String,
+    /// Input tokens excluding cache reads and writes.
+    pub input: u64,
+    /// Output tokens, including any reasoning tokens.
+    pub output: u64,
+    /// Tokens read from the prompt cache.
+    pub cache_read: u64,
+    /// Tokens written to the prompt cache.
+    pub cache_write: u64,
+    /// Reasoning tokens, a subset of `output`; `0` when not reported separately.
+    pub reasoning: u64,
+    /// Tools requested by this call, as short `"name arg"` previews.
+    pub tools: Vec<String>,
 }
 
 /// One spawned subagent (detail view only).
@@ -154,6 +178,9 @@ pub struct SessionView {
     pub subagents: Vec<SubAgentView>,
     /// Recent tool-call timeline (trimmed tail, newest last).
     pub tool_calls: Vec<ToolCallView>,
+    /// Token usage of recent model calls (trimmed tail, newest last). Empty for
+    /// agents whose logs do not report usage per call.
+    pub token_calls: Vec<TokenCallView>,
     /// Recent chat transcript tail (user/assistant only).
     pub chat_messages: Vec<ChatMsgView>,
     /// GitHub Copilot-only usage extras; `null` for other agents.
@@ -238,71 +265,94 @@ impl App {
     /// Pure read — does not tick or spawn anything. Intended flow for a web
     /// server: lock the `App`, `tick_no_summaries()`, `to_snapshot()`, release.
     pub fn to_snapshot(&self, interval_ms: u64) -> Snapshot {
+        self.build_snapshot(interval_ms, &[])
+    }
+
+    /// Include recently completed sessions separately from live metrics.
+    pub fn to_tracking_snapshot(&self, interval_ms: u64) -> Snapshot {
+        self.build_snapshot(interval_ms, self.completed_sessions())
+    }
+
+    fn build_snapshot(&self, interval_ms: u64, completed_sessions: &[AgentSession]) -> Snapshot {
         let now = SystemTime::now();
 
-        let sessions = self
-            .sessions
-            .iter()
-            .map(|s| SessionView {
-                agent_cli: s.agent_cli,
-                launch_surface: s.launch_surface,
-                pid: s.pid,
-                session_id: s.session_id.clone(),
-                project_name: s.project_name.clone(),
-                cwd: s.cwd.clone(),
-                config_root: s.config_root.clone(),
-                copilot: s.copilot.clone(),
-                status: s.status.clone(),
-                model: s.model.clone(),
-                effort: s.effort.clone(),
-                version: s.version.clone(),
-                context_percent: s.context_percent,
-                context_window: s.context_window,
-                total_tokens: s.total_tokens(),
-                input_tokens: s.total_input_tokens,
-                output_tokens: s.total_output_tokens,
-                cache_read_tokens: s.total_cache_read,
-                cache_create_tokens: s.total_cache_create,
-                turn_count: s.turn_count,
-                mem_mb: s.mem_mb,
-                git_branch: s.git_branch.clone(),
-                git_added: s.git_added,
-                git_modified: s.git_modified,
-                started_at_ms: s.started_at,
-                elapsed_secs: s.elapsed().as_secs(),
-                summary: self.session_summary(s),
-                current_task: s.current_tasks.last().cloned(),
-                children: cap_children(&s.children, 16),
-                compaction_count: s.compaction_count,
-                token_history: tail(&s.token_history, 64),
-                subagents: tail(&s.subagents, 16)
-                    .iter()
-                    .map(|a| SubAgentView {
-                        name: a.name.clone(),
-                        status: a.status.clone(),
-                        tokens: a.tokens,
-                    })
-                    .collect(),
-                tool_calls: tail(&s.tool_calls, 12)
-                    .iter()
-                    .map(|t| ToolCallView {
-                        name: t.name.clone(),
-                        arg: t.arg.clone(),
-                        duration_ms: t.duration_ms,
-                    })
-                    .collect(),
-                chat_messages: tail(&s.chat_messages, MAX_CHAT_MESSAGES)
-                    .iter()
-                    .map(|m| ChatMsgView {
-                        role: match &m.role {
-                            ChatRole::User => "user",
-                            ChatRole::Assistant => "assistant",
-                        },
-                        text: m.text.clone(),
-                    })
-                    .collect(),
-            })
-            .collect();
+        let session_views = |sessions: &[AgentSession]| {
+            sessions
+                .iter()
+                .map(|s| SessionView {
+                    agent_cli: s.agent_cli,
+                    launch_surface: s.launch_surface,
+                    pid: s.pid,
+                    session_id: s.session_id.clone(),
+                    project_name: s.project_name.clone(),
+                    cwd: s.cwd.clone(),
+                    config_root: s.config_root.clone(),
+                    copilot: s.copilot.clone(),
+                    status: s.status.clone(),
+                    model: s.model.clone(),
+                    effort: s.effort.clone(),
+                    version: s.version.clone(),
+                    context_percent: s.context_percent,
+                    context_window: s.context_window,
+                    total_tokens: s.total_tokens(),
+                    input_tokens: s.total_input_tokens,
+                    output_tokens: s.total_output_tokens,
+                    cache_read_tokens: s.total_cache_read,
+                    cache_create_tokens: s.total_cache_create,
+                    turn_count: s.turn_count,
+                    mem_mb: s.mem_mb,
+                    git_branch: s.git_branch.clone(),
+                    git_added: s.git_added,
+                    git_modified: s.git_modified,
+                    started_at_ms: s.started_at,
+                    elapsed_secs: s.elapsed().as_secs(),
+                    summary: self.session_summary(s),
+                    current_task: s.current_tasks.last().cloned(),
+                    children: cap_children(&s.children, 16),
+                    compaction_count: s.compaction_count,
+                    token_history: tail(&s.token_history, 64),
+                    subagents: tail(&s.subagents, 16)
+                        .iter()
+                        .map(|a| SubAgentView {
+                            name: a.name.clone(),
+                            status: a.status.clone(),
+                            tokens: a.tokens,
+                        })
+                        .collect(),
+                    tool_calls: tail(&s.tool_calls, 12)
+                        .iter()
+                        .map(|t| ToolCallView {
+                            name: t.name.clone(),
+                            arg: t.arg.clone(),
+                            duration_ms: t.duration_ms,
+                        })
+                        .collect(),
+                    token_calls: tail(&s.token_calls, 40)
+                        .iter()
+                        .map(|c| TokenCallView {
+                            at_ms: c.at_ms,
+                            model: c.model.clone(),
+                            input: c.input,
+                            output: c.output,
+                            cache_read: c.cache_read,
+                            cache_write: c.cache_write,
+                            reasoning: c.reasoning,
+                            tools: c.tools.iter().map(|t| cap_str(t, 60)).collect(),
+                        })
+                        .collect(),
+                    chat_messages: tail(&s.chat_messages, MAX_CHAT_MESSAGES)
+                        .iter()
+                        .map(|m| ChatMsgView {
+                            role: match &m.role {
+                                ChatRole::User => "user",
+                                ChatRole::Assistant => "assistant",
+                            },
+                            text: m.text.clone(),
+                        })
+                        .collect(),
+                })
+                .collect()
+        };
 
         let mcp_servers = self
             .mcp_servers
@@ -324,7 +374,8 @@ impl App {
             aggregate: self.agent_aggregate,
             token_rate: self.token_rates.back().copied().unwrap_or(0.0),
             interval_ms,
-            sessions,
+            sessions: session_views(&self.sessions),
+            completed_sessions: session_views(completed_sessions),
             rate_limits: self.rate_limits.clone(),
             orphan_ports: self
                 .orphan_ports
@@ -417,6 +468,7 @@ mod tests {
             // Bounded tails.
             assert!(s.token_history.len() <= 64);
             assert!(s.tool_calls.len() <= 24);
+            assert!(s.token_calls.len() <= 40);
             // Chat roles map to the stable wire strings only.
             for m in &s.chat_messages {
                 assert!(m.role == "user" || m.role == "assistant");

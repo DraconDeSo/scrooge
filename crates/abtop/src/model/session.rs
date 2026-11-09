@@ -114,6 +114,80 @@ pub struct ToolCall {
     pub duration_ms: u64,
 }
 
+/// Tokens used by one call to the model, with the tools that call asked for.
+///
+/// This is the finest grain providers report: thinking, text and tool requests
+/// in one response share a single count. A tool's result is paid for as input
+/// of the following call.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TokenCall {
+    /// Provider message id, when one is reported. Lines sharing it are one call.
+    pub id: Option<String>,
+    /// Unix-epoch ms of the call; `0` when unknown.
+    pub at_ms: u64,
+    pub model: String,
+    /// Input tokens excluding cache reads and writes.
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    /// Reasoning tokens, a subset of `output`. `0` when the provider does not
+    /// report them separately.
+    pub reasoning: u64,
+    /// Tools requested by this call, as `"name arg"`.
+    pub tools: Vec<String>,
+}
+
+/// Maximum model calls kept per session to bound memory.
+pub const MAX_TOKEN_CALLS: usize = 200;
+/// Maximum tools listed per model call.
+const MAX_TOOLS_PER_CALL: usize = 8;
+
+impl TokenCall {
+    pub fn add_tool(&mut self, name: &str, arg: &str) {
+        if self.tools.len() < MAX_TOOLS_PER_CALL {
+            self.tools.push(format!("{name} {arg}").trim().to_string());
+        }
+    }
+
+    fn merge(&mut self, other: TokenCall) {
+        self.input = self.input.max(other.input);
+        self.output = self.output.max(other.output);
+        self.cache_read = self.cache_read.max(other.cache_read);
+        self.cache_write = self.cache_write.max(other.cache_write);
+        self.reasoning = self.reasoning.max(other.reasoning);
+        if !other.model.is_empty() {
+            self.model = other.model;
+        }
+        for tool in other.tools {
+            if self.tools.len() < MAX_TOOLS_PER_CALL {
+                self.tools.push(tool);
+            }
+        }
+    }
+}
+
+/// Find an earlier record of the same model call, newest first.
+pub fn find_token_call<'a>(calls: &'a [TokenCall], id: &str) -> Option<&'a TokenCall> {
+    calls.iter().rev().find(|c| c.id.as_deref() == Some(id))
+}
+
+/// Record a model call, merging it into an earlier record with the same id and
+/// dropping the oldest calls past [`MAX_TOKEN_CALLS`].
+pub fn push_token_call(calls: &mut Vec<TokenCall>, call: TokenCall) {
+    let existing = call
+        .id
+        .as_deref()
+        .and_then(|id| calls.iter().rposition(|c| c.id.as_deref() == Some(id)));
+    match existing {
+        Some(index) => calls[index].merge(call),
+        None => calls.push(call),
+    }
+    if calls.len() > MAX_TOKEN_CALLS {
+        calls.drain(..calls.len() - MAX_TOKEN_CALLS);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatRole {
     User,
@@ -207,6 +281,9 @@ pub struct AgentSession {
     pub chat_messages: Vec<ChatMessage>,
     /// Timeline of tool calls extracted from transcript.
     pub tool_calls: Vec<ToolCall>,
+    /// Token usage of recent model calls, oldest first. Empty for agents whose
+    /// logs do not report usage per call.
+    pub token_calls: Vec<TokenCall>,
     /// Unix-epoch ms of the assistant turn whose `tool_use` blocks are still
     /// awaiting the matching `user` response. Zero when the latest assistant
     /// turn has already been closed (no tools currently in flight).
@@ -356,9 +433,58 @@ mod tests {
             pending_since_ms: 0,
             thinking_since_ms: 0,
             file_accesses: Vec::new(),
+            token_calls: Vec::new(),
             copilot: None,
             config_root: String::new(),
         }
+    }
+
+    fn call(id: Option<&str>, output: u64, tools: &[&str]) -> TokenCall {
+        TokenCall {
+            id: id.map(str::to_string),
+            output,
+            tools: tools.iter().map(|t| t.to_string()).collect(),
+            ..TokenCall::default()
+        }
+    }
+
+    #[test]
+    fn push_token_call_merges_same_id_keeping_highest_counts_and_all_tools() {
+        let mut calls = Vec::new();
+        push_token_call(&mut calls, call(Some("a"), 5, &["Read x"]));
+        push_token_call(&mut calls, call(Some("b"), 7, &[]));
+        push_token_call(&mut calls, call(Some("a"), 40, &["Edit y"]));
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].output, 40);
+        assert_eq!(calls[0].tools, ["Read x", "Edit y"]);
+    }
+
+    #[test]
+    fn push_token_call_never_merges_calls_without_an_id() {
+        let mut calls = Vec::new();
+        push_token_call(&mut calls, call(None, 5, &[]));
+        push_token_call(&mut calls, call(None, 5, &[]));
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn push_token_call_drops_the_oldest_past_the_cap() {
+        let mut calls = Vec::new();
+        for output in 0..MAX_TOKEN_CALLS as u64 + 5 {
+            push_token_call(&mut calls, call(None, output, &[]));
+        }
+        assert_eq!(calls.len(), MAX_TOKEN_CALLS);
+        assert_eq!(calls[0].output, 5);
+    }
+
+    #[test]
+    fn add_tool_caps_the_list_and_trims_an_empty_argument() {
+        let mut c = TokenCall::default();
+        for _ in 0..MAX_TOOLS_PER_CALL + 3 {
+            c.add_tool("extension", "");
+        }
+        assert_eq!(c.tools.len(), MAX_TOOLS_PER_CALL);
+        assert_eq!(c.tools[0], "extension");
     }
 
     #[test]

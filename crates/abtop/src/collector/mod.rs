@@ -304,6 +304,8 @@ pub struct MultiCollector {
     tracked_port_children: HashMap<u32, TrackedPortChild>,
     /// Detected orphan ports (updated each tick).
     pub orphan_ports: Vec<OrphanPort>,
+    /// Confirmed completions from this tick, kept apart from live processes.
+    pub(crate) completed_sessions: Vec<AgentSession>,
     /// MCP servers (codex mcp-server) detected on the most recent tick.
     pub mcp_servers: Vec<McpServer>,
     /// Whether to hide mcp-server-owned rollouts from the sessions
@@ -363,6 +365,7 @@ impl MultiCollector {
             cached_git: HashMap::new(),
             tracked_port_children: HashMap::new(),
             orphan_ports: Vec::new(),
+            completed_sessions: Vec::new(),
             mcp_servers: Vec::new(),
             mcp_suppress: true,
             desktop_rollout_scanner: DesktopRolloutScanner::new(),
@@ -469,27 +472,28 @@ impl MultiCollector {
             }
         }
 
-        // Hide dead sessions: Codex uses pid==0 sentinel, Claude is filtered in collect().
-        all.retain(|s| !matches!(s.status, SessionStatus::Done));
+        // Keep completions available to the desktop tracker without counting
+        // them as live processes in the TUI, host metrics or orphan detection.
+        self.completed_sessions = all
+            .extract_if(.., |s| s.status == SessionStatus::Done)
+            .collect();
         all.sort_by_key(|s| std::cmp::Reverse(s.started_at));
 
         // --- Orphan port detection ---
         // 1. Update tracked port children from live sessions
         let mut live_child_pids = std::collections::HashSet::new();
         for s in &all {
-            if !matches!(s.status, SessionStatus::Done) {
-                for child in &s.children {
-                    live_child_pids.insert(child.pid);
-                    if let Some(port) = child.port {
-                        self.tracked_port_children.insert(
-                            child.pid,
-                            TrackedPortChild {
-                                port,
-                                command: child.command.clone(),
-                                project_name: s.project_name.clone(),
-                            },
-                        );
-                    }
+            for child in &s.children {
+                live_child_pids.insert(child.pid);
+                if let Some(port) = child.port {
+                    self.tracked_port_children.insert(
+                        child.pid,
+                        TrackedPortChild {
+                            port,
+                            command: child.command.clone(),
+                            project_name: s.project_name.clone(),
+                        },
+                    );
                 }
             }
         }

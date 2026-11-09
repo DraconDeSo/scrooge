@@ -35,7 +35,9 @@ const UI_DEFAULTS = {
 const state = {
   snap: null,
   quota: [],        // Copilot quota, one entry per account
+  quotaLoaded: false,
   claude: null,     // Claude OAuth usage (5h / 7d %)
+  claudeLoaded: false,
   local: null,      // Claude local consumption from transcripts
   settings: null,   // backend settings view
   ui: structuredClone(UI_DEFAULTS),
@@ -44,8 +46,11 @@ const state = {
   onTop: true,
   selected: null,
   expanded: null,
+  callSort: "recent", // recent | heaviest, in the per-call token list
   filter: "",
   rate: [],
+  trackedSessions: new Map(),
+  dismissedSessions: new Set(),
   sessionOrder: new Map(),
   sessionSort: null,
   nextSessionRank: 0,
@@ -93,11 +98,29 @@ function pctText(pct, digits = 0) {
   return `<span class="${level(pct)}">${(pct || 0).toFixed(digits)}%${warn}</span>`;
 }
 const SURFACE = { Cli: "", App: "·app", Ide: "·ide" };
-const STATUS = { Thinking: "think", Executing: "exec", Waiting: "wait", RateLimited: "rate", Unknown: "unknown", Done: "done" };
+const STATUS = {
+  Waiting: { label: "Waiting for input", icon: "…", group: 0 },
+  Executing: { label: "Running tools", icon: "▶", group: 1 },
+  Thinking: { label: "Thinking", icon: "◐", group: 1 },
+  RateLimited: { label: "Rate limited", icon: "‖", group: 1 },
+  Unknown: { label: "Unconfirmed", icon: "?", group: 1 },
+  Stopped: { label: "Stopped", icon: "■", group: 2 },
+  Done: { label: "Completed", icon: "", group: 3 }, // the card shows a green check instead
+};
 function keyOf(s) { return s.agent_cli + ":" + s.session_id; }
+function statusOf(s) { return STATUS[s.status] || STATUS.Unknown; }
+function isWorking(s) { return s.status === "Thinking" || s.status === "Executing"; }
+function isEnded(s) { return s.status === "Done" || s.status === "Stopped"; }
+function isTrackable(s) { return s.agent_cli !== "codex" || s.model?.toLowerCase() !== "codex-auto-review"; }
+function currentTaskOf(s) {
+  if (!isWorking(s)) return "";
+  const task = s.current_task?.trim();
+  if (task && task !== "thinking...") return task;
+  const subagent = s.subagents?.find((a) => a.status === "working");
+  return subagent ? `Subagent · ${subagent.name}` : "";
+}
 function liveSessions() {
-  return (state.snap?.sessions || []).filter((s) =>
-    s.agent_cli !== "codex" || s.model?.toLowerCase() !== "codex-auto-review");
+  return (state.snap?.sessions || []).filter((s) => isTrackable(s) && !state.dismissedSessions.has(keyOf(s)));
 }
 function shortModel(m) { return String(m || "-").replace(/^claude-/, ""); }
 /** Disabled in Settings → Providers (the backend stops collecting it too). */
@@ -221,7 +244,7 @@ function applyUi() {
   document.body.classList.add("density-" + state.ui.density);
   computeAccountColors();
 }
-darkQuery.addEventListener("change", () => { if (state.ui.scheme === "system") { applyUi(); render(); } });
+darkQuery.addEventListener("change", () => { if (state.ui.scheme === "system") { applyUi(); render(); renderUsage(); } });
 /** Effective color of a provider in the current theme (override or theme default). */
 function providerColor(k) {
   return getComputedStyle(document.documentElement).getPropertyValue("--p-" + k).trim() || "#8b949e";
@@ -241,27 +264,48 @@ async function saveUi(patch) {
   Object.assign(state.ui, patch);
   applyUi();
   render();
+  if (patch.theme || patch.scheme || patch.colorOverrides) renderUsage();
   try { state.settings = await invoke("update_settings", { patch: { ui: patch } }); } catch (e) { console.error(e); }
 }
 
 // ---------------------------------------------------------------- data
+function updateSessionTracking(snap) {
+  const observed = new Map();
+  for (const s of [...(snap.completed_sessions || []), ...(snap.sessions || [])]) {
+    if (isTrackable(s)) observed.set(keyOf(s), s);
+  }
+  for (const [key, s] of observed) {
+    if (isWorking(s)) state.dismissedSessions.delete(key);
+    if (!state.dismissedSessions.has(key)) state.trackedSessions.set(key, s);
+  }
+  for (const [key, s] of state.trackedSessions) {
+    if (!observed.has(key) && !isEnded(s)) {
+      state.trackedSessions.set(key, { ...s, status: "Stopped", current_task: null });
+    }
+  }
+}
+
+function clearTrackedSessions(keys) {
+  for (const key of keys) {
+    state.dismissedSessions.add(key);
+    state.trackedSessions.delete(key);
+    state.sessionOrder.delete(key);
+    if (state.selected === key) state.selected = null;
+    if (state.expanded === key) state.expanded = null;
+  }
+  const selection = window.getSelection();
+  if ($("p-sessions").contains(selection?.anchorNode)) selection.removeAllRanges();
+  render();
+}
+
 function orderedSessions() {
-  const all = liveSessions();
-  const now = Date.now();
+  const all = [...state.trackedSessions.values()];
   if (state.sessionSort !== state.ui.sort) {
     state.sessionSort = state.ui.sort;
     state.sessionOrder.clear();
     state.nextSessionRank = 0;
   }
-  const keys = new Set(all.map(keyOf));
-  for (const [key, entry] of state.sessionOrder) {
-    if (!keys.has(key) && now - entry.lastSeen > 60_000) {
-      state.sessionOrder.delete(key);
-      if (state.selected === key) state.selected = null;
-      if (state.expanded === key) state.expanded = null;
-    }
-  }
-  const act = (s) => (s.status === "Executing" ? 0 : s.status === "Thinking" ? 1 : s.status === "RateLimited" ? 2 : s.status === "Waiting" ? 3 : 4);
+  const act = (s) => s.status === "Executing" ? 0 : s.status === "Thinking" ? 1 : s.status === "RateLimited" ? 2 : 3;
   const sorters = {
     recent: (a, b) => b.started_at_ms - a.started_at_ms,
     activity: (a, b) => act(a) - act(b) || b.started_at_ms - a.started_at_ms,
@@ -272,16 +316,16 @@ function orderedSessions() {
   const sorter = sorters[state.ui.sort] || sorters.recent;
   const added = all.filter((s) => !state.sessionOrder.has(keyOf(s)));
   added.sort((a, b) => sorter(a, b) || keyOf(a).localeCompare(keyOf(b)));
-  for (const s of added) state.sessionOrder.set(keyOf(s), { rank: state.nextSessionRank++, lastSeen: now });
-  for (const s of all) state.sessionOrder.get(keyOf(s)).lastSeen = now;
-  return all.sort((a, b) => state.sessionOrder.get(keyOf(a)).rank - state.sessionOrder.get(keyOf(b)).rank);
+  for (const s of added) state.sessionOrder.set(keyOf(s), state.nextSessionRank++);
+  return all.sort((a, b) => statusOf(a).group - statusOf(b).group ||
+    state.sessionOrder.get(keyOf(a)) - state.sessionOrder.get(keyOf(b)));
 }
 function visibleSessions() {
   const f = state.filter.trim().toLowerCase();
   return orderedSessions().filter((s) => {
     if (isHidden(s.agent_cli)) return false;
-    if (!state.ui.showIdle && !["Thinking", "Executing", "RateLimited"].includes(s.status)) return false;
-    return !f || [s.project_name, s.model, s.summary, s.agent_cli, s.git_branch, s.cwd]
+    if (!state.ui.showIdle && ["Waiting", "Unknown", "Stopped"].includes(s.status)) return false;
+    return !f || [s.project_name, s.model, s.summary, s.agent_cli, s.git_branch, s.cwd, s.current_task, statusOf(s).label]
       .some((v) => String(v || "").toLowerCase().includes(f));
   });
 }
@@ -292,11 +336,19 @@ function currentRate() {
 }
 
 // ---------------------------------------------------------------- render
+function loaderHtml(text) {
+  return `<div class="loader"><span class="spin"></span><span>${esc(text)}</span></div>`;
+}
 function renderHeader() {
   const all = liveSessions().filter((s) => !isHidden(s.agent_cli));
-  const active = all.filter((s) => s.status === "Thinking" || s.status === "Executing").length;
+  const active = all.filter(isWorking).length;
+  const tracked = [...state.trackedSessions.values()].filter((s) => !isHidden(s.agent_cli)).length;
   $("pulse").classList.toggle("live", active > 0);
-  $("counts").textContent = all.length ? `${all.length} session${all.length > 1 ? "s" : ""} · ${active} active` : "no agents";
+  if (!state.snap) {
+    $("counts").innerHTML = `<span class="spin"></span> scanning…`;
+  } else {
+    $("counts").textContent = tracked ? `${tracked} tracked · ${active} active` : "no tracked sessions";
+  }
   const present = [...new Set(all.map(idOf))];
   $("legend").innerHTML = present.map((id) => `<span ${idStyle(id)}>${esc(idName(id))}</span>`).join("");
   // token split across live sessions: read (input), written (output), cache
@@ -322,7 +374,8 @@ function copilotBlocks(full) {
   const liveCp = (state.snap?.sessions || []).filter((s) => s.copilot);
   const livePremium = liveCp.reduce((a, s) => a + (s.copilot.premium_requests || 0), 0);
   if (!state.quota.length) {
-    out.push(`<div class="q-group pv-copilot"><div class="q-head"><span class="src">COPILOT</span></div><div class="empty">loading…</div></div>`);
+    const body = state.quotaLoaded ? `<div class="empty">no Copilot account logged in</div>` : loaderHtml("Loading Copilot quota…");
+    out.push(`<div class="q-group pv-copilot"><div class="q-head"><span class="src">COPILOT</span></div>${body}${modelUsageHtml("copilot")}</div>`);
   }
   const label = { premium_interactions: "premium", chat: "chat", completions: "compl" };
   for (const q of state.quota) {
@@ -356,7 +409,7 @@ function copilotBlocks(full) {
       body += `<div class="q-note ell">live: <b>${fmtNum(livePremium, 2)}</b> premium req in ${liveCp.length} session${liveCp.length > 1 ? "s" : ""}</div>`;
     }
     const tag = q.is_cli ? `<span class="tag" title="Account used by the Copilot CLI / app">CLI</span>` : "";
-    out.push(`<div class="q-group" ${idStyle("copilot@" + q.login)}><div class="q-head"><span class="src">COPILOT</span><span class="acct" title="${esc(q.login)}">${esc(q.login || "?")}</span>${tag}<span class="meta" title="${esc(meta)}">${esc(meta)}</span></div>${body}</div>`);
+    out.push(`<div class="q-group" ${idStyle("copilot@" + q.login)}><div class="q-head"><span class="src">COPILOT</span><span class="acct" title="${esc(q.login)}">${esc(q.login || "?")}</span>${tag}<span class="meta" title="${esc(meta)}">${esc(meta)}</span></div>${body}${modelUsageHtml("copilot", q.login)}</div>`);
   }
   return out;
 }
@@ -406,6 +459,7 @@ function claudeBlock(full) {
     for (const x of cu.extra || []) rows.push(`<div class="q-row"><span class="lbl">${esc(x.label)}</span>${bar(x.pct)}<span class="val">${pctText(x.pct)} <small>${untilEpoch(x.resets_at)}</small></span></div>`);
   }
   const L = state.local;
+  const localLoading = state.ui.claudeLocal && !(L && L.computed_at_ms);
   if (state.ui.claudeLocal && L && L.computed_at_ms) {
     const blockEnd = L.block_start ? L.block_start + 5 * 3600 : 0;
     const blockPct = L.block_start ? ((Date.now() / 1000 - L.block_start) / (5 * 3600)) * 100 : 0;
@@ -415,40 +469,46 @@ function claudeBlock(full) {
     rows.push(`<div class="q-row" title="Last 24 hours: ${fmtNum(L.day.messages)} replies, output ${fmtTok(L.day.output)}"><span class="lbl">24h</span>${hist}<span class="val"><b>${fmtTok(L.day.total)}</b></span></div>`);
     if (full) {
       rows.push(`<div class="q-row"><span class="lbl">7d</span><span class="lbl ell">${fmtNum(L.week.messages)} replies · out ${fmtTok(L.week.output)}</span><span class="val"><b>${fmtTok(L.week.total)}</b></span></div>`);
-      for (const m of (L.models || []).slice(0, 3)) {
-        rows.push(`<div class="q-row"><span class="lbl ell" title="${esc(m.model)}">${esc(shortModel(m.model))}</span>${bar(L.week.total ? (m.total / L.week.total) * 100 : 0, "time")}<span class="val">${fmtTok(m.total)}</span></div>`);
-      }
     }
+  } else if (localLoading && rows.length) {
+    rows.push(`<div class="q-note"><span class="spin"></span> scanning local transcripts…</div>`);
   }
   let note = "";
   if (!limits && cu?.error) {
     note = `<div class="q-note ell" title="Plan limits unavailable: ${esc(cu.error)}">% limits: needs Claude Code CLI login · see ⚙</div>`;
   }
-  if (!rows.length && !note) return "";
+  if (!rows.length && !note) {
+    if (localLoading || !state.claudeLoaded) {
+      return `<div class="q-group pv-claude"><div class="q-head"><span class="src">CLAUDE</span></div>${loaderHtml("Scanning Claude usage…")}${modelUsageHtml("claude")}</div>`;
+    }
+    return "";
+  }
   const meta = [cu?.subscription, state.ui.claudeLocal && L?.computed_at_ms ? "local tokens" : ""].filter(Boolean).join(" · ");
-  return `<div class="q-group pv-claude"><div class="q-head"><span class="src">CLAUDE</span><span class="meta">${esc(meta)}</span></div>${rows.join("")}${note}</div>`;
+  return `<div class="q-group pv-claude"><div class="q-head"><span class="src">CLAUDE</span><span class="meta">${esc(meta)}</span></div>${rows.join("")}${note}${modelUsageHtml("claude")}</div>`;
 }
 
 function renderQuota() {
   const full = state.mode === "full";
   const parts = [...copilotBlocks(full)];
-  parts.push(claudeBlock(full));
-  const rendered = new Set(["copilot", "claude"]);
+  const claude = claudeBlock(full);
+  parts.push(claude);
+  const rendered = new Set(["copilot"]);
+  if (claude) rendered.add("claude");
   for (const [src, rl] of currentRateLimits()) {
     if (src === "claude" || isHidden(src)) continue;
     const rows = rateRows(rl);
     const local = localSessionNote(src);
     if (rows.length || local) {
       rendered.add(src);
-      parts.push(`<div class="q-group ${pv(src)}"><div class="q-head"><span class="src">${esc(src.toUpperCase())}</span></div>${rows.join("")}${local}</div>`);
+      parts.push(`<div class="q-group ${pv(src)}"><div class="q-head"><span class="src">${esc(src.toUpperCase())}</span></div>${rows.join("")}${local}${modelUsageHtml(src)}</div>`);
     }
   }
   // Every provider gets a local-only fallback. Remote authentication enriches
   // these rows with official limits but never controls whether usage is shown.
-  for (const provider of new Set(liveSessions().map((session) => session.agent_cli))) {
+  // Providers with only recorded history in the period are listed here too.
+  for (const provider of new Set([...liveSessions().map((session) => session.agent_cli), ...usageProviders()])) {
     if (rendered.has(provider) || isHidden(provider)) continue;
-    const local = localSessionNote(provider);
-    if (local) parts.push(`<div class="q-group ${pv(provider)}"><div class="q-head"><span class="src">${esc(provName(provider).toUpperCase())}</span><span class="meta">local usage</span></div>${local}</div>`);
+    parts.push(`<div class="q-group ${pv(provider)}"><div class="q-head"><span class="src">${esc(provName(provider).toUpperCase())}</span><span class="meta">local usage</span></div>${localSessionNote(provider)}${modelUsageHtml(provider)}</div>`);
   }
   const html = parts.filter(Boolean).join("");
   $("quota").innerHTML = html || `<div class="empty">no quota sources</div>`;
@@ -470,28 +530,76 @@ function cardHtml(s) {
   const sel = state.selected === k ? " sel" : "";
   const ctx = s.context_percent || 0;
   const expanded = state.mode === "compact" && state.expanded === k;
-  const task = state.ui.showTask ? `<div class="c-task">${esc(s.current_task)}</div>` : "";
+  const status = statusOf(s);
+  const task = state.ui.showTask ? currentTaskOf(s) : "";
   const id = idOf(s);
   const cr = s.copilot ? ` · <b class="pc" title="${fmtNum(s.copilot.premium_requests, 2)} premium requests">◆${fmtCredits((s.copilot.nano_aiu || 0) / 1e9)}</b>` : "";
   return `<div class="card${sel}" ${idStyle(id)} data-k="${esc(k)}">
     <div class="c-top">
+      ${s.status === "Done" ? `<span class="c-done" title="Completed" aria-hidden="true">✓</span>` : ""}
       <span class="badge" title="${esc(idName(id))} · ${esc(s.launch_surface)}">${tag}${SURFACE[s.launch_surface] || ""}</span>
       <span class="c-proj" title="${esc(s.cwd)}">${esc(s.project_name)}</span>
-      <span class="st st-${esc(s.status)}">${STATUS[s.status] || esc(s.status)}</span>
       <span class="c-model" title="${esc(s.model)} ${esc(s.effort)}">${esc(shortModel(s.model))}</span>
+      <button type="button" class="mini-btn c-clear" data-clear-session aria-label="Clear session for ${esc(s.project_name)}" title="Clear from live tracking">×</button>
+    </div>
+    <div class="c-activity">
+      <span class="st st-${esc(s.status)}">${status.icon ? `<span class="st-icon" aria-hidden="true">${status.icon}</span>` : ""}${status.label}</span>
+      ${task ? `<span class="c-task" title="${esc(task)}">${esc(task)}</span>` : ""}
     </div>
     <div class="c-sum" title="${esc(s.summary)}">${esc(s.summary)}</div>
     <div class="c-meta">
       <div class="ctx" title="context ${ctx.toFixed(1)}% of ${fmtTok(s.context_window)}">${bar(ctx)}${pctText(ctx)}</div>
       <div class="nums" title="read (input) ${fmtNum(s.input_tokens)} · written (output) ${fmtNum(s.output_tokens)} · cache read ${fmtNum(s.cache_read_tokens)} · cache write ${fmtNum(s.cache_create_tokens)} · ${s.turn_count} turns · ${fmtDur(s.elapsed_secs)}">↓<b>${fmtTok(s.input_tokens)}</b> ↑<b>${fmtTok(s.output_tokens)}</b> ⟳<b>${fmtTok(s.cache_read_tokens + s.cache_create_tokens)}</b>${cr}</div>
     </div>
-    ${task}
     ${expanded ? `<div class="det">${detailHtml(s)}</div>` : ""}
   </div>`;
 }
 
+/** Where the tokens went: one row per model call, with the tools it requested. */
+function tokenCallsHtml(s) {
+  const calls = s.token_calls || [];
+  if (!calls.length) return "";
+  const size = (c) => TOKEN_FIELDS.reduce((sum, key) => sum + (c[key] || 0), 0);
+  const largest = Math.max(...calls.map(size), 1);
+  const heaviest = state.callSort === "heaviest";
+  const ordered = heaviest ? [...calls].sort((a, b) => size(b) - size(a)) : [...calls].reverse();
+  const totals = Object.fromEntries(TOKEN_FIELDS.map((key) => [key, calls.reduce((sum, c) => sum + (c[key] || 0), 0)]));
+  const key = TOKEN_FIELDS.map((f) => `<span class="mix-${f}" title="${fmtNum(totals[f])}">${TOKEN_LABELS[f]} <b>${fmtTok(totals[f])}</b></span>`).join("");
+  const rows = ordered.map((c) => {
+    const total = size(c);
+    const parts = TOKEN_FIELDS.map((f) => `<i class="mix-${f}" style="width:${total ? (c[f] || 0) / total * 100 : 0}%"></i>`).join("");
+    const time = c.at_ms ? new Date(c.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+    const tip = [
+      c.model,
+      ...TOKEN_FIELDS.map((f) => `${TOKEN_LABELS[f]} ${fmtNum(c[f])}`),
+      c.reasoning ? `reasoning ${fmtNum(c.reasoning)} (part of output)` : "",
+    ].filter(Boolean).join(" · ");
+    const tools = c.tools?.length ? c.tools.join(" · ") : "";
+    return `<div class="call" title="${esc(tip)}">
+      <span class="call-time">${esc(time)}</span>
+      <div class="call-bar"><div class="usage-mix" style="width:${Math.max(2, total / largest * 100).toFixed(1)}%">${parts}</div></div>
+      <b class="call-total">${fmtTok(total)}</b>
+      <span class="call-tools${tools ? "" : " none"}" title="${esc(tools)}">${esc(tools || "reply, no tools")}</span>
+    </div>`;
+  }).join("");
+  const seg = ["recent", "heaviest"].map((v) => `<button type="button" data-call-sort="${v}" class="${state.callSort === v ? "on" : ""}">${v}</button>`).join("");
+  return `<h4 class="calls-head">tokens per call · last ${calls.length}<span class="seg mini">${seg}</span></h4>
+    <div class="usage-mix-key">${key}</div>
+    <div class="calls">${rows}</div>
+    <p class="calls-note">Thinking, text and tool requests in one response share one count. A tool's result is paid as input of the next call.</p>`;
+}
+
+function setCallSort(e) {
+  const button = e.target.closest("[data-call-sort]");
+  if (!button) return false;
+  state.callSort = button.dataset.callSort;
+  renderSessions();
+  return true;
+}
+
 function detailHtml(s) {
   const kv = (k, v) => `<span class="k">${k}</span><span class="v">${v}</span>`;
+  const task = currentTaskOf(s);
   const git = s.git_branch
     ? `${esc(s.git_branch)} <span style="color:var(--ok)">+${s.git_added}</span> <span style="color:var(--warn)">~${s.git_modified}</span>`
     : "—";
@@ -500,7 +608,9 @@ function detailHtml(s) {
     h += `<div class="det-head"><span class="badge">${idTag(idOf(s))}</span><span class="t">${esc(idName(idOf(s)))} · ${esc(s.project_name)}</span></div>`;
   }
   h += `<h4>session</h4><div class="kv">
-    ${kv("pid", s.pid + (s.launch_surface !== "Cli" ? ` <span style="color:var(--dim)">(${esc(s.launch_surface)})</span>` : ""))}
+    ${kv("status", statusOf(s).label)}
+    ${task ? kv("task", esc(task)) : ""}
+    ${kv("pid", s.pid ? s.pid + (s.launch_surface !== "Cli" ? ` <span style="color:var(--dim)">(${esc(s.launch_surface)})</span>` : "") : "—")}
     ${s.copilot && cliAccount() ? kv("account", esc(cliAccount())) : ""}
     ${kv("cwd", `<a data-reveal="${esc(s.cwd)}" title="Open in Explorer">${esc(s.cwd)}</a>`)}
     ${kv("branch", git)}
@@ -523,7 +633,7 @@ function detailHtml(s) {
     ${kv("output", fmtTok(s.output_tokens) + (s.copilot?.reasoning_tokens ? ` <span style="color:var(--dim)">(${fmtTok(s.copilot.reasoning_tokens)} reasoning)</span>` : ""))}
     ${kv("cache read", fmtTok(s.cache_read_tokens))}
     ${kv("cache write", fmtTok(s.cache_create_tokens))}
-  </div>${sparkSvg(s.token_history)}`;
+  </div>${sparkSvg(s.token_history)}${tokenCallsHtml(s)}`;
   const tools = (s.tool_calls || []).slice(-10).reverse();
   if (tools.length) {
     h += `<h4>tools</h4><div class="tl">${tools.map((t) =>
@@ -543,8 +653,50 @@ function detailHtml(s) {
   return h;
 }
 
+/** Cards in order, with a divider above the completed ones (always last). */
+function sessionListHtml(list) {
+  const firstDone = list.findIndex((s) => s.status === "Done");
+  const done = firstDone < 0 ? 0 : list.length - firstDone;
+  return list.map((s, i) => (i === firstDone
+    ? `<div class="sessions-sep" role="separator" data-count="${done}"><span class="ok">✓</span> completed · ${done}</div>`
+    : "") + cardHtml(s)).join("");
+}
+
+/** ↓ reaches the completed sessions; once there the same button goes back up. */
+function completedReached(box, sep) {
+  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
+  return atEnd || sep.getBoundingClientRect().top <= box.getBoundingClientRect().top + 2;
+}
+function updateJumpCompleted() {
+  const box = $("sessions");
+  const btn = $("jump-completed");
+  const sep = box.querySelector(".sessions-sep");
+  const useful = sep && box.scrollHeight > box.clientHeight + 1;
+  btn.classList.toggle("hidden", !useful);
+  if (!useful) return;
+  const up = completedReached(box, sep);
+  const html = up ? "↑ top" : `↓ <span class="ok">✓</span> ${esc(sep.dataset.count)}`;
+  if (btn.renderedLabel !== html) {
+    btn.innerHTML = html;
+    btn.renderedLabel = html;
+    btn.title = up ? "Back to the top of the list" : "Jump to completed sessions";
+    btn.setAttribute("aria-label", btn.title);
+  }
+}
+function jumpCompleted() {
+  const box = $("sessions");
+  const sep = box.querySelector(".sessions-sep");
+  if (!sep) return;
+  const top = completedReached(box, sep)
+    ? 0
+    : box.scrollTop + sep.getBoundingClientRect().top - box.getBoundingClientRect().top;
+  const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  box.scrollTo({ top, behavior: calm ? "auto" : "smooth" });
+}
+
 function renderSessions() {
   const list = visibleSessions();
+  $("clear-sessions").disabled = !state.trackedSessions.size;
   const box = $("sessions");
   const sel = window.getSelection();
   const compactSelecting = state.mode === "compact" && sel && sel.toString() && sel.anchorNode &&
@@ -555,17 +707,24 @@ function renderSessions() {
     const anchor = box.scrollTop > 0 && [...box.children].find((card) =>
       keys.has(card.dataset.k) && card.getBoundingClientRect().bottom > top);
     const offset = anchor ? anchor.getBoundingClientRect().top : 0;
-    if (!list.length) {
-      const msg = !state.snap ? "collecting…" : state.filter ? "no match" : "No running agents. Start Claude Code, Codex, OpenCode or GitHub Copilot.";
-      box.innerHTML = `<div class="empty">${msg}</div>`;
-    } else {
-      box.innerHTML = list.map(cardHtml).join("");
+    const focused = document.activeElement?.matches("[data-clear-session]") && document.activeElement.closest(".card");
+    const html = !list.length
+      ? !state.snap
+        ? loaderHtml("Scanning running agent sessions…")
+        : `<div class="empty">${state.filter.trim() ? "No sessions match this filter." : "No sessions in live tracking. Working sessions appear as they are detected."}</div>`
+      : sessionListHtml(list);
+    if (html !== box.renderedSessions) {
+      box.innerHTML = html;
+      box.renderedSessions = html;
+      const findCard = (key) => [...box.children].find((node) => node.dataset.k === key);
       if (anchor) {
-        const card = [...box.children].find((node) => node.dataset.k === anchor.dataset.k);
+        const card = findCard(anchor.dataset.k);
         if (card) box.scrollTop += card.getBoundingClientRect().top - offset;
       }
+      if (focused) (findCard(focused.dataset.k)?.querySelector("[data-clear-session]") || $("filter")).focus({ preventScroll: true });
     }
   }
+  updateJumpCompleted();
   if (state.mode === "full") {
     const det = $("detail");
     const selecting = sel && sel.toString() && det.contains(sel.anchorNode);
@@ -573,12 +732,22 @@ function renderSessions() {
       const s = list.find((x) => keyOf(x) === state.selected) || list[0];
       det.className = "detail";
       if (s) det.style.setProperty("--pc", idColor(idOf(s)));
-      det.innerHTML = s ? `<div class="det">${detailHtml(s)}</div>` : "";
+      det.innerHTML = !state.snap
+        ? loaderHtml("Loading session details…")
+        : s ? `<div class="det">${detailHtml(s)}</div>` : "";
     }
   }
 }
 
 function renderFullPanels() {
+  if (!state.snap) {
+    $("ctx-bars").innerHTML = loaderHtml("Loading context windows…");
+    $("tokens").innerHTML = loaderHtml("Loading token totals…");
+    $("projects").innerHTML = loaderHtml("Loading active projects…");
+    $("ports").innerHTML = loaderHtml("Scanning listening ports…");
+    renderStorage();
+    return;
+  }
   const all = liveSessions().filter((s) => !isHidden(s.agent_cli));
   $("ctx-bars").innerHTML = all.length
     ? all.map((s, i) => `<div class="cb" ${idStyle(idOf(s))}><span class="i">S${i + 1}</span><span class="p" title="${esc(idName(idOf(s)))} · ${esc(s.cwd)}">${esc(s.project_name)}</span>${bar(s.context_percent)}<span class="pc2">${pctText(s.context_percent || 0)}</span></div>`).join("")
@@ -784,6 +953,7 @@ function onSnapshot(json) {
     return;
   }
   state.snap = next;
+  updateSessionTracking(next);
   state.rate.push(currentRate());
   if (state.rate.length > RATE_POINTS) state.rate.shift();
   pushRatePoints();
@@ -853,10 +1023,14 @@ if (windowsPanel) {
 $("sessions").addEventListener("click", (e) => {
   const a = e.target.closest("[data-reveal]");
   if (a) { invoke("reveal", { path: a.dataset.reveal }).catch(() => {}); return; }
-  if (e.target.closest(".det")) return;
+  if (setCallSort(e) || e.target.closest(".det")) return;
   const card = e.target.closest(".card");
   if (!card) return;
   const k = card.dataset.k;
+  if (e.target.closest("[data-clear-session]")) {
+    clearTrackedSessions([k]);
+    return;
+  }
   state.selected = k;
   if (state.mode === "compact") state.expanded = state.expanded === k ? null : k;
   render();
@@ -864,11 +1038,18 @@ $("sessions").addEventListener("click", (e) => {
 $("detail").addEventListener("click", (e) => {
   const a = e.target.closest("[data-reveal]");
   if (a) invoke("reveal", { path: a.dataset.reveal }).catch(() => {});
+  setCallSort(e);
 });
+$("sessions").addEventListener("scroll", updateJumpCompleted, { passive: true });
+$("jump-completed").onclick = jumpCompleted;
 $("filter").addEventListener("input", (e) => { state.filter = e.target.value; renderSessions(); });
+$("clear-sessions").onclick = () => {
+  clearTrackedSessions(state.trackedSessions.keys());
+  $("filter").focus({ preventScroll: true });
+};
 function refreshWidget() {
   invoke("refresh");
-  if (usageView() !== "live") loadUsage();
+  loadUsage();
 }
 $("btn-refresh").onclick = refreshWidget;
 $("btn-mode").onclick = () => invoke("toggle_mode");
@@ -912,11 +1093,15 @@ document.addEventListener("keydown", (e) => {
     case "ArrowDown": case "j": moveSelection(1); break;
     case "ArrowUp": case "k": moveSelection(-1); break;
     case "Enter":
+      if (e.target.closest("button, summary")) break;
       if (state.mode === "compact" && state.selected) { state.expanded = state.expanded === state.selected ? null : state.selected; render(); }
       break;
   }
 });
-window.addEventListener("resize", () => { if (state.mode === "full") drawRate(); });
+window.addEventListener("resize", () => {
+  updateJumpCompleted();
+  if (state.mode === "full") drawRate();
+});
 
 // --------------------------------------------------------------- settings
 function setSeg(id, v) {
@@ -1100,17 +1285,23 @@ function fillSessionsPane() {
 function fillProviders() {
   const counts = {};
   for (const s of state.snap?.sessions || []) counts[pvKey(s.agent_cli)] = (counts[pvKey(s.agent_cli)] || 0) + 1;
-  const sizes = Object.fromEntries((state.storage?.providers || []).map((p) => [p.provider, p.total_bytes]));
+  const st = state.storage;
+  const sizes = Object.fromEntries((st?.providers || []).map((p) => [p.provider, p.total_bytes]));
   const off = new Set((state.settings?.settings?.disabled_providers || []).map((p) => p.toLowerCase()));
   $("s-providers").innerHTML = Object.entries(PROVIDERS).map(([k, p]) => {
     const on = !off.has(k);
-    const info = !on ? "disabled — not scanned" : [counts[k] ? `${counts[k]} running` : "not running", sizes[k] != null ? fmtBytes(sizes[k]) + " on disk" : ""].filter(Boolean).join(" · ");
+    const diskText = sizes[k] != null ? fmtBytes(sizes[k]) + (st?.scanning ? "+ on disk" : " on disk") : st?.scanning ? "scanning disk…" : "";
+    const info = !on ? "disabled — not scanned" : [counts[k] ? `${counts[k]} running` : "not running", diskText].filter(Boolean).join(" · ");
     return `<div class="prov-toggle ${on ? "" : "off"}" ${idStyle(storageColorId(k))}><span class="badge">${p.tag}</span><div class="meta"><b>${esc(p.name)}</b><small>${esc(info)}</small></div><label class="sw"><input type="checkbox" data-prov="${k}" ${on ? "checked" : ""} /><i></i></label></div>`;
   }).join("");
-  const st = state.storage;
-  $("s-storage-info").textContent = st?.computed_at_ms
-    ? `Measured ${new Date(st.computed_at_ms).toLocaleTimeString()} in ${(st.duration_ms / 1000).toFixed(1)} s. Shown in the full-screen view.`
-    : "Measuring…";
+  if (st?.scanning) {
+    const partialTotal = (st.providers || []).reduce((a, p) => a + p.total_bytes, 0);
+    $("s-storage-info").innerHTML = `<span class="spin"></span> Measuring storage &amp; worktrees…${partialTotal ? ` (${fmtBytes(partialTotal)} found so far)` : ""}`;
+  } else if (st?.computed_at_ms) {
+    $("s-storage-info").textContent = `Measured ${new Date(st.computed_at_ms).toLocaleTimeString()} in ${(st.duration_ms / 1000).toFixed(1)} s. Shown in the full-screen view.`;
+  } else {
+    $("s-storage-info").innerHTML = `<span class="spin"></span> Measuring…`;
+  }
 }
 $("s-providers").addEventListener("change", async (e) => {
   const cb = e.target.closest("input[data-prov]");
@@ -1123,17 +1314,34 @@ $("s-providers").addEventListener("change", async (e) => {
   renderUsage();
   loadUsage();
 });
-$("s-storage-refresh").onclick = () => { invoke("refresh_storage"); $("s-storage-info").textContent = "Measuring…"; };
-$("storage-refresh").onclick = () => { invoke("refresh_storage"); $("storage").innerHTML = `<div class="empty">measuring…</div>`; };
+$("s-storage-refresh").onclick = () => {
+  if (state.storage) state.storage.scanning = true;
+  invoke("refresh_storage");
+  fillProviders();
+};
+$("storage-refresh").onclick = () => {
+  if (state.storage) state.storage.scanning = true;
+  invoke("refresh_storage");
+  renderStorage();
+};
 
 function renderStorage() {
   const st = state.storage;
-  if (!st?.computed_at_ms) { $("storage").innerHTML = `<div class="empty">measuring…</div>`; return; }
-  const list = (st.providers || []).filter((p) => !isHidden(p.provider));
-  if (!list.length) { $("storage").innerHTML = `<div class="empty">no provider data on disk</div>`; return; }
+  const scanning = Boolean(!st || st.scanning || !st.computed_at_ms);
+  $("storage-refresh")?.classList.toggle("spinning", scanning);
+  const list = (st?.providers || []).filter((p) => !isHidden(p.provider));
+  if (!list.length) {
+    $("storage").innerHTML = scanning
+      ? loaderHtml("Measuring provider storage & worktrees…")
+      : `<div class="empty">no provider data on disk</div>`;
+    return;
+  }
   const max = Math.max(...list.map((p) => p.total_bytes), 1);
   const total = list.reduce((a, p) => a + p.total_bytes, 0);
-  $("storage").innerHTML = `<div class="q-note">total <b>${fmtBytes(total)}</b> · ${new Date(st.computed_at_ms).toLocaleTimeString()}</div>` + list.map((p) => {
+  const statusLine = scanning
+    ? `<div class="q-note"><span class="spin"></span> total <b>${fmtBytes(total)}</b> · scanning…</div>`
+    : `<div class="q-note">total <b>${fmtBytes(total)}</b> · ${new Date(st.computed_at_ms).toLocaleTimeString()}</div>`;
+  $("storage").innerHTML = statusLine + list.map((p) => {
     const id = storageColorId(p.provider);
     const locs = p.locations.map((l) => `<div class="sto-loc" data-reveal="${esc(l.path)}" title="${esc(l.label)}\n${esc(l.path)}\n${fmtNum(l.files)} files${l.partial ? " (partial)" : ""} — click to open"><span>${esc(l.label)} <span style="color:var(--faint)">${esc(homeAbbrev(l.path))}</span></span><span>${l.partial ? "≥" : ""}${fmtBytes(l.bytes)}</span></div>`).join("");
     return `<div class="sto" ${idStyle(id)}><div class="sto-head"><span class="n">${esc(PROVIDERS[p.provider]?.name || p.provider)}</span><span class="s">${fmtBytes(p.total_bytes)}</span></div>${bar((p.total_bytes / max) * 100, "time")}${locs}</div>`;
@@ -1262,37 +1470,56 @@ $("s-upd-auto").onchange = (e) => patchSettings({ auto_update_check: e.target.ch
 
 // ------------------------------------------------------------------ boot
 initUsage();
-(async function boot() {
-  await listen("snapshot", (e) => onSnapshot(e.payload));
-  await listen("quota", (e) => { state.quota = e.payload || []; computeAccountColors(); render(); });
-  await listen("claude-usage", (e) => { state.claude = e.payload; renderQuota(); if (settingsOpen()) fillClaudeStatus(); });
-  await listen("claude-local", (e) => { state.local = e.payload; renderQuota(); if (settingsOpen()) fillClaudeStatus(); });
-  await listen("mode", (e) => setMode(e.payload));
-  await listen("always-on-top", (e) => setOnTop(e.payload));
-  await listen("open-settings", () => openSettings());
-  await listen("storage", (e) => { state.storage = e.payload; if (state.mode === "full") renderStorage(); if (settingsOpen()) fillProviders(); });
-  await listen("update-available", (e) => showUpdate(e.payload));
-  await listen("update-progress", (e) => {
-    const { downloaded, total } = e.payload;
-    const pct = total ? ` ${Math.round((downloaded / total) * 100)}%` : ` ${fmtTok(downloaded)}B`;
-    $("update-text").textContent = $("s-upd-status").textContent = "Downloading update…" + pct;
-  });
-  try {
-    const [snap, quota, claude, local, mode, onTop, settings] = await Promise.all([
-      invoke("get_snapshot"), invoke("get_quota"), invoke("get_claude_usage"), invoke("get_claude_local"),
-      invoke("get_mode"), invoke("get_always_on_top"), invoke("get_settings"),
-    ]);
+(function boot() {
+  render();
+  Promise.all([
+    listen("snapshot", (e) => onSnapshot(e.payload)),
+    listen("quota", (e) => { state.quotaLoaded = true; state.quota = e.payload || []; computeAccountColors(); render(); }),
+    listen("claude-usage", (e) => { state.claudeLoaded = true; state.claude = e.payload; renderQuota(); if (settingsOpen()) fillClaudeStatus(); }),
+    listen("claude-local", (e) => { state.local = e.payload; renderQuota(); if (settingsOpen()) fillClaudeStatus(); }),
+    listen("mode", (e) => setMode(e.payload)),
+    listen("always-on-top", (e) => setOnTop(e.payload)),
+    listen("open-settings", () => openSettings()),
+    listen("storage", (e) => { state.storage = e.payload; if (state.mode === "full") renderStorage(); if (settingsOpen()) fillProviders(); }),
+    listen("update-available", (e) => showUpdate(e.payload)),
+    listen("update-progress", (e) => {
+      const { downloaded, total } = e.payload;
+      const pct = total ? ` ${Math.round((downloaded / total) * 100)}%` : ` ${fmtTok(downloaded)}B`;
+      $("update-text").textContent = $("s-upd-status").textContent = "Downloading update…" + pct;
+    }),
+  ]).catch(console.error);
+
+  invoke("get_always_on_top").then(setOnTop).catch(console.error);
+  invoke("get_mode").then(setMode).catch(console.error);
+  invoke("get_settings").then((settings) => {
     state.settings = settings;
     loadUi(settings?.settings?.ui);
+    render();
+    renderUsage();
+  }).catch(console.error);
+  invoke("get_snapshot").then(onSnapshot).catch(console.error);
+  invoke("get_quota").then((quota) => {
+    if (Array.isArray(quota) && quota.length) state.quotaLoaded = true;
     state.quota = quota || [];
     computeAccountColors();
-    state.claude = claude && claude.fetched_at_ms ? claude : null;
-    state.local = local && local.computed_at_ms ? local : null;
-    state.storage = await invoke("get_storage");
-    setOnTop(onTop);
-    setMode(mode);
-    onSnapshot(snap);
-  } catch (err) {
-    console.error(err);
-  }
+    render();
+  }).catch(console.error);
+  invoke("get_claude_usage").then((claude) => {
+    if (claude && claude.fetched_at_ms) {
+      state.claudeLoaded = true;
+      state.claude = claude;
+      renderQuota();
+    }
+  }).catch(console.error);
+  invoke("get_claude_local").then((local) => {
+    if (local && local.computed_at_ms) {
+      state.local = local;
+      renderQuota();
+    }
+  }).catch(console.error);
+  invoke("get_storage").then((storage) => {
+    state.storage = storage;
+    if (state.mode === "full") renderStorage();
+    if (settingsOpen()) fillProviders();
+  }).catch(console.error);
 })();

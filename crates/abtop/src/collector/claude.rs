@@ -1,7 +1,8 @@
 use super::process::{self, ProcInfo};
 use crate::model::{
-    AgentSession, ChatMessage, ChatRole, ChildProcess, FileAccess, FileOp, LaunchSurface,
-    SessionFile, SessionStatus, SubAgent, MAX_CHAT_MESSAGES, MAX_FILE_ACCESSES,
+    find_token_call, push_token_call, AgentSession, ChatMessage, ChatRole, ChildProcess,
+    FileAccess, FileOp, LaunchSurface, SessionFile, SessionStatus, SubAgent, TokenCall,
+    MAX_CHAT_MESSAGES, MAX_FILE_ACCESSES,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -426,11 +427,16 @@ impl ClaudeCollector {
             } else {
                 (0, 0)
             };
+            let known_calls = cached
+                .as_ref()
+                .filter(|_| from_offset > 0)
+                .map_or(&[][..], |c| c.token_calls.as_slice());
             let delta = parse_transcript_with_previous(
                 tp,
                 from_offset,
                 initial_context_tokens,
                 initial_cache_read,
+                known_calls,
             );
 
             if let Some(mut prev) = cached {
@@ -459,7 +465,7 @@ impl ClaudeCollector {
                     prev.turn_count += delta.turn_count;
                     // Always update current_task from delta — empty means
                     // latest assistant turn had no tool_use (task cleared)
-                    if delta.turn_count > 0 {
+                    if delta.saw_assistant {
                         prev.current_task = delta.current_task;
                     }
                     if !delta.version.is_empty() {
@@ -476,6 +482,9 @@ impl ClaudeCollector {
                         let remaining = 500 - prev.tool_calls.len();
                         prev.tool_calls
                             .extend(delta.tool_calls.into_iter().take(remaining));
+                    }
+                    for call in delta.token_calls {
+                        push_token_call(&mut prev.token_calls, call);
                     }
                     prev.chat_messages.extend(delta.chat_messages);
                     let len = prev.chat_messages.len();
@@ -535,9 +544,11 @@ impl ClaudeCollector {
             first_assistant_text: String::new(),
             chat_messages: Vec::new(),
             tool_calls: Vec::new(),
+            token_calls: Vec::new(),
             last_assistant_ts_ms: 0,
             last_user_ts_ms: 0,
             saw_turn: false,
+            saw_assistant: false,
             file_accesses: Vec::new(),
         };
         let cached = self
@@ -563,6 +574,7 @@ impl ClaudeCollector {
         let first_assistant_text = cached.first_assistant_text.clone();
         let chat_messages = cached.chat_messages.clone();
         let tool_calls = cached.tool_calls.clone();
+        let token_calls = cached.token_calls.clone();
         let file_accesses = cached.file_accesses.clone();
 
         if !pid_alive {
@@ -715,6 +727,7 @@ impl ClaudeCollector {
             pending_since_ms: cached.last_assistant_ts_ms,
             thinking_since_ms: cached.last_user_ts_ms,
             file_accesses,
+            token_calls,
             copilot: None,
             config_root: super::abbrev_path(&config.base_dir()),
         })
@@ -1285,6 +1298,9 @@ struct TranscriptResult {
     chat_messages: Vec<ChatMessage>,
     /// Tool call timeline extracted from transcript.
     tool_calls: Vec<crate::model::ToolCall>,
+    /// Token usage per model call. One call can span several transcript lines,
+    /// so entries from a later parse are merged by message id.
+    token_calls: Vec<TokenCall>,
     /// Timestamp of the last assistant turn (epoch ms), used to compute tool duration.
     last_assistant_ts_ms: u64,
     /// Timestamp (epoch ms) of the most recent `user` line that has not been
@@ -1296,6 +1312,9 @@ struct TranscriptResult {
     /// must not overwrite cached state - otherwise a no-new-data tick
     /// would clear the live pending/thinking markers.
     saw_turn: bool,
+    /// True when this parse observed at least one `assistant` line, even one
+    /// continuing a model call first seen by an earlier parse.
+    saw_assistant: bool,
     /// File access audit log extracted from tool_use entries.
     file_accesses: Vec<FileAccess>,
 }
@@ -1335,14 +1354,17 @@ fn file_identity(path: &Path) -> (u64, u64) {
 }
 
 fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
-    parse_transcript_with_previous(path, from_offset, 0, 0)
+    parse_transcript_with_previous(path, from_offset, 0, 0, &[])
 }
 
+/// `known_calls` are the model calls recorded by earlier parses of this file,
+/// so a response split across two polls is still counted once.
 fn parse_transcript_with_previous(
     path: &Path,
     from_offset: u64,
     initial_context_tokens: u64,
     initial_cache_read: u64,
+    known_calls: &[TokenCall],
 ) -> TranscriptResult {
     let identity = file_identity(path);
     let mut result = TranscriptResult {
@@ -1368,9 +1390,11 @@ fn parse_transcript_with_previous(
         first_assistant_text: String::new(),
         chat_messages: Vec::new(),
         tool_calls: Vec::new(),
+        token_calls: Vec::new(),
         last_assistant_ts_ms: 0,
         last_user_ts_ms: 0,
         saw_turn: false,
+        saw_assistant: false,
         file_accesses: Vec::new(),
     };
 
@@ -1392,6 +1416,7 @@ fn parse_transcript_with_previous(
         from_offset
     };
     let from_offset = effective_offset;
+    let known_calls = if from_offset > 0 { known_calls } else { &[] };
     let mut prev_context_tokens = if from_offset > 0 {
         initial_context_tokens
     } else {
@@ -1473,7 +1498,25 @@ fn parse_transcript_with_previous(
 
                     match val.get("type").and_then(|t| t.as_str()) {
                         Some("assistant") => {
-                            result.turn_count += 1;
+                            result.saw_assistant = true;
+                            // Claude Code writes one line per content block, each
+                            // repeating the response's id and usage. They are one
+                            // model call: count it once, adding only what grew.
+                            let message_id = val
+                                .get("message")
+                                .and_then(|m| m.get("id"))
+                                .and_then(|id| id.as_str())
+                                .filter(|id| !id.is_empty());
+                            let earlier = message_id
+                                .and_then(|id| {
+                                    find_token_call(&result.token_calls, id)
+                                        .or_else(|| find_token_call(known_calls, id))
+                                })
+                                .map(|c| (c.input, c.output, c.cache_read, c.cache_write));
+                            if earlier.is_none() {
+                                result.turn_count += 1;
+                            }
+                            let mut line_call: Option<TokenCall> = None;
                             // Clear previous task on each new turn so stale tasks
                             // don't persist when latest turn has no tool_use
                             result.current_task = String::new();
@@ -1498,10 +1541,23 @@ fn parse_transcript_with_previous(
                                         .get("cache_creation_input_tokens")
                                         .and_then(|v| v.as_u64())
                                         .unwrap_or(0);
-                                    result.total_input += inp;
-                                    result.total_output += out;
-                                    result.total_cache_read += cr;
-                                    result.total_cache_create += cc;
+                                    let (seen_inp, seen_out, seen_cr, seen_cc) =
+                                        earlier.unwrap_or((0, 0, 0, 0));
+                                    result.total_input += inp.saturating_sub(seen_inp);
+                                    result.total_output += out.saturating_sub(seen_out);
+                                    result.total_cache_read += cr.saturating_sub(seen_cr);
+                                    result.total_cache_create += cc.saturating_sub(seen_cc);
+                                    line_call = Some(TokenCall {
+                                        id: message_id.map(str::to_string),
+                                        at_ms: entry_ts_ms,
+                                        model: result.model.clone(),
+                                        input: inp,
+                                        output: out,
+                                        cache_read: cr,
+                                        cache_write: cc,
+                                        reasoning: 0,
+                                        tools: Vec::new(),
+                                    });
                                     // Context = input_tokens + cache_read (excludes cache_creation, #54)
                                     // Exception: when cache_read = 0 but cache_creation > 0,
                                     // this is a fresh session creating cache for the first time,
@@ -1531,11 +1587,22 @@ fn parse_transcript_with_previous(
                                     prev_context_tokens = current_context;
                                     prev_cache_read = cr;
                                     result.prev_cache_read = cr;
-                                    if result.context_history.len() < 10_000 {
-                                        result.context_history.push(result.last_context_tokens);
-                                    }
-                                    if result.token_history.len() < 10_000 {
-                                        result.token_history.push(inp + out + cr + cc);
+                                    if earlier.is_none() {
+                                        if result.context_history.len() < 10_000 {
+                                            result.context_history.push(result.last_context_tokens);
+                                        }
+                                        if result.token_history.len() < 10_000 {
+                                            result.token_history.push(inp + out + cr + cc);
+                                        }
+                                    } else if result
+                                        .token_calls
+                                        .last()
+                                        .and_then(|c| c.id.as_deref())
+                                        == message_id
+                                    {
+                                        if let Some(last) = result.token_history.last_mut() {
+                                            *last = inp + out + cr + cc;
+                                        }
                                     }
                                 }
                                 // Extract first assistant text (text blocks only) for summary fallback
@@ -1592,6 +1659,9 @@ fn parse_transcript_with_previous(
                                             let arg = extract_tool_arg(item);
                                             // Last tool_use in forward order wins current_task
                                             result.current_task = format!("{} {}", tool, arg);
+                                            if let Some(call) = line_call.as_mut() {
+                                                call.add_tool(tool, &truncate(&arg, 40));
+                                            }
                                             if result.tool_calls.len() < 500 {
                                                 result.tool_calls.push(crate::model::ToolCall {
                                                     name: tool.to_string(),
@@ -1624,6 +1694,13 @@ fn parse_transcript_with_previous(
                                             }
                                         }
                                     }
+                                }
+                                // Synthetic lines (errors, interruptions) report zero
+                                // usage and never reached the model.
+                                if let Some(call) = line_call.take().filter(|c| {
+                                    c.input + c.output + c.cache_read + c.cache_write > 0
+                                }) {
+                                    push_token_call(&mut result.token_calls, call);
                                 }
                                 // Save timestamp for duration calculation — only when
                                 // tool_use is present, so we can detect "tools pending".
@@ -3122,6 +3199,96 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
             result.file_accesses[MAX_FILE_ACCESSES - 1].path,
             format!("src/file_{}.rs", total - 1),
         );
+    }
+
+    /// One assistant transcript line of the model call `id`.
+    fn assistant_line(id: &str, output: u64, block: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-03-28T15:00:05Z","message":{{"id":"{id}","model":"claude-sonnet-4-6","usage":{{"input_tokens":10,"output_tokens":{output},"cache_read_input_tokens":1000,"cache_creation_input_tokens":20}},"content":[{block}]}}}}"#
+        )
+    }
+    const THINKING: &str = r#"{"type":"thinking","thinking":"hm"}"#;
+    const TOOL_READ: &str = r#"{"type":"tool_use","name":"Read","input":{"file_path":"a.rs"}}"#;
+
+    #[test]
+    fn repeated_message_lines_count_as_one_call() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let lines = [
+            assistant_line("msg_1", 3, THINKING),
+            assistant_line("msg_1", 50, TOOL_READ),
+            assistant_line("msg_2", 7, THINKING),
+        ];
+        write_lines(&mut file, &lines.each_ref().map(String::as_str));
+
+        let result = parse_transcript(file.path(), 0);
+
+        assert_eq!(result.total_input, 20);
+        assert_eq!(result.total_output, 57);
+        assert_eq!(result.total_cache_read, 2000);
+        assert_eq!(result.total_cache_create, 40);
+        assert_eq!(result.turn_count, 2);
+        assert_eq!(result.context_history.len(), 2);
+        assert_eq!(result.token_history, vec![1080, 1037]);
+        assert_eq!(result.token_calls.len(), 2);
+        assert_eq!(result.token_calls[0].output, 50);
+        assert!(result.token_calls[0].tools[0].starts_with("Read"));
+        assert!(result.token_calls[1].tools.is_empty());
+    }
+
+    #[test]
+    fn message_split_across_polls_adds_only_the_growth() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write_lines(&mut file, &[assistant_line("msg_1", 3, THINKING).as_str()]);
+        let first = parse_transcript(file.path(), 0);
+        assert_eq!(first.total_output, 3);
+
+        write_lines(
+            &mut file,
+            &[assistant_line("msg_1", 50, TOOL_READ).as_str()],
+        );
+        let delta = parse_transcript_with_previous(
+            file.path(),
+            first.new_offset,
+            first.last_context_tokens,
+            first.prev_cache_read,
+            &first.token_calls,
+        );
+
+        assert_eq!(delta.total_input, 0);
+        assert_eq!(delta.total_output, 47);
+        assert_eq!(delta.total_cache_read, 0);
+        assert_eq!(delta.turn_count, 0);
+        assert!(delta.saw_assistant);
+        assert!(delta.current_task.starts_with("Read"));
+        let mut calls = first.token_calls;
+        for call in delta.token_calls {
+            push_token_call(&mut calls, call);
+        }
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].output, 50);
+        assert_eq!(calls[0].tools.len(), 1);
+    }
+
+    #[test]
+    fn zero_usage_lines_are_not_model_calls() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let line = r#"{"type":"assistant","timestamp":"2026-03-28T15:00:05Z","message":{"id":"msg_x","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[]}}"#;
+        write_lines(&mut file, &[line]);
+
+        assert!(parse_transcript(file.path(), 0).token_calls.is_empty());
+    }
+
+    #[test]
+    fn lines_without_a_message_id_stay_separate_calls() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let line = r#"{"type":"assistant","timestamp":"2026-03-28T15:00:05Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[]}}"#;
+        write_lines(&mut file, &[line, line]);
+
+        let result = parse_transcript(file.path(), 0);
+
+        assert_eq!(result.total_output, 4);
+        assert_eq!(result.turn_count, 2);
+        assert_eq!(result.token_calls.len(), 2);
     }
 
     #[test]
