@@ -10,6 +10,7 @@ only appears while it is running.
 | OpenCode | ✅ | ✅ | ✅ | — | PID → working directory |
 | GitHub Copilot | ✅ | ✅ in/out/cache/reasoning | ✅ | ✅ per account, monthly | `inuse.<pid>.lock` |
 | Gemini CLI | ✅ | ✅ in/out/cache | ✅ | — | most recent chat per process |
+| Gemini via Antigravity | ✅ | ✅ in/out/cache | ✅ | local usage | recent brain transcript per process |
 | Grok Build | ✅ | ≈ total only | ✅ | — | most recent session per process |
 
 ## Claude Code
@@ -71,6 +72,15 @@ Copilot Chat inside editors is not covered: its local files contain no token or 
 the earlier one. The project's working directory is read from `.project_root`. Gemini CLI
 keeps no process registry, so each running `gemini` process is matched to the most recently
 written chat. Legacy single-document `session-*.json` files are not read.
+
+## Gemini via Antigravity
+
+Antigravity desktop and IDE sessions are read from
+`~/.gemini/{antigravity,antigravity-ide}/brain/<session>/.system_generated/logs/`.
+`transcript_full.jsonl` is preferred, with `transcript.jsonl` as a fallback. Completed
+`PLANNER_RESPONSE` events provide input, output and cache-read tokens. This local accounting
+does not require a Google login to be exposed to Scrooge; provider authentication only
+affects whether an official remote allowance can be shown.
 
 ## Grok Build
 

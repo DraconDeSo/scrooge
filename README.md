@@ -24,13 +24,14 @@
 ## Features
 
 - **All your agents in one place**: Claude Code, Codex CLI, OpenCode, GitHub Copilot
-  (CLI and desktop app), Gemini CLI and Grok Build. A provider only appears when it runs.
+  (CLI and desktop app), Gemini CLI, Antigravity and Grok Build. A provider only appears
+  when it runs.
 - **Tokens that matter**: read (input), written (output) and cached tokens for every session
   and in total, context-window usage with warning thresholds, recent tools and child
   processes.
-- **Quotas**: GitHub Copilot quota for *every* account in the GitHub CLI (each one a separate
-  provider with its own color, AI credits in credits or USD), Claude 5-hour / weekly limits,
-  Codex limits, plus local Claude consumption per 5-hour block, day and week.
+- **Quotas and local fallback**: official GitHub Copilot, Claude and Codex limits when
+  available; locally observed consumption remains visible without provider CLI
+  authentication. Cached Codex limits survive after Codex exits.
 - **Two views**: a compact always-on-top panel and a full-screen dashboard with a token-rate
   chart stacked by provider or by project.
 - **Disk usage**: how much space each provider takes in every place it stores data

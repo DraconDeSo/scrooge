@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Count Gemini usage from live Antigravity desktop and IDE transcripts, without requiring
+  a provider CLI login.
+- Keep cached Codex allowance visible after Codex exits and show a local usage fallback for
+  every running provider when an official quota is unavailable.
+- Show Copilot session consumption even when GitHub CLI is not installed, and avoid
+  double-counting Antigravity history when default and configured Gemini homes coincide.
+
 ## [0.1.0]
 
 ### Added

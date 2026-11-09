@@ -24,6 +24,7 @@ file contents are never included. Treat the output as sensitive if you store or 
 | --- | --- |
 | `collector/copilot.rs` | GitHub Copilot CLI / GitHub Copilot app sessions |
 | `collector/gemini.rs` | Google Gemini CLI sessions |
+| `collector/antigravity.rs` | Gemini sessions from Antigravity desktop / IDE transcripts |
 | `collector/grok.rs` | xAI Grok Build sessions |
 | `model::AgentSession::copilot`, `snapshot::SessionView::copilot` | Copilot usage extras (premium requests, AI credits, code changes) |
 | `collector/process.rs` | `command()` helper that never opens a console window on Windows |

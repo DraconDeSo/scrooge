@@ -596,6 +596,12 @@ fn source_files(source: Source) -> Vec<PathBuf> {
         }
         _ => {}
     }
+    // Several providers expose the same data through a default path and an
+    // environment-configured path. When both resolve to the same directory,
+    // count each transcript once (notably Antigravity with GEMINI_CLI_HOME
+    // unset).
+    files.sort();
+    files.dedup();
     files
 }
 

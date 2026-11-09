@@ -1,3 +1,4 @@
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
@@ -8,6 +9,7 @@ pub mod opencode;
 pub mod process;
 pub mod rate_limit;
 
+pub use antigravity::AntigravityCollector;
 pub use claude::ClaudeCollector;
 pub use codex::CodexCollector;
 pub use copilot::CopilotCollector;
@@ -346,6 +348,7 @@ impl MultiCollector {
         }
         if !is_hidden("gemini") {
             collectors.push(Box::new(GeminiCollector::new()));
+            collectors.push(Box::new(AntigravityCollector::new()));
         }
         if !is_hidden("grok") {
             collectors.push(Box::new(GrokCollector::new()));
@@ -372,10 +375,24 @@ impl MultiCollector {
 
     /// Collect rate limit info from all registered collectors.
     pub fn agent_rate_limits(&self) -> Vec<RateLimitInfo> {
-        self.collectors
+        let mut limits: Vec<RateLimitInfo> = self
+            .collectors
             .iter()
             .filter_map(|c| c.live_rate_limit())
-            .collect()
+            .collect();
+        // Keep the last locally observed Codex allowance visible after Codex
+        // exits. This is deliberately independent of a running session and
+        // performs no authentication or network request.
+        if self.codex_enabled
+            && !limits
+                .iter()
+                .any(|limit| limit.source.eq_ignore_ascii_case("codex"))
+        {
+            if let Some(cached) = rate_limit::read_codex_cache() {
+                limits.push(cached);
+            }
+        }
+        limits
     }
 
     /// Return all config directories discovered across all collectors.
@@ -519,27 +536,33 @@ mod tests {
     #[test]
     fn with_hidden_empty_keeps_all_collectors() {
         let mc = MultiCollector::with_hidden(&[]);
-        assert_eq!(mc.collectors.len(), 6);
+        assert_eq!(mc.collectors.len(), 7);
     }
 
     #[test]
     fn with_hidden_codex_drops_codex_only() {
         let mc = MultiCollector::with_hidden(&["codex".to_string()]);
-        assert_eq!(mc.collectors.len(), 5);
+        assert_eq!(mc.collectors.len(), 6);
     }
 
     #[test]
     fn with_hidden_is_case_insensitive() {
         let mc = MultiCollector::with_hidden(&["CODEX".to_string()]);
-        assert_eq!(mc.collectors.len(), 5);
+        assert_eq!(mc.collectors.len(), 6);
         let mc = MultiCollector::with_hidden(&["Claude".to_string()]);
-        assert_eq!(mc.collectors.len(), 5);
+        assert_eq!(mc.collectors.len(), 6);
     }
 
     #[test]
     fn with_hidden_unknown_names_are_ignored() {
         let mc = MultiCollector::with_hidden(&["kiro".to_string(), "cursor".to_string()]);
-        assert_eq!(mc.collectors.len(), 6);
+        assert_eq!(mc.collectors.len(), 7);
+    }
+
+    #[test]
+    fn with_hidden_gemini_drops_cli_and_antigravity() {
+        let mc = MultiCollector::with_hidden(&["gemini".to_string()]);
+        assert_eq!(mc.collectors.len(), 5);
     }
 
     #[test]

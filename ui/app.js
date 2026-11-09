@@ -10,7 +10,7 @@ const PROVIDERS = {
   codex: { name: "Codex", tag: "CD" },
   opencode: { name: "OpenCode", tag: "OC" },
   copilot: { name: "GitHub Copilot", tag: "GH" },
-  gemini: { name: "Gemini CLI", tag: "GM" },
+  gemini: { name: "Gemini / Antigravity", tag: "GM" },
   grok: { name: "Grok Build", tag: "GK" },
 };
 const UI_DEFAULTS = {
@@ -350,7 +350,9 @@ function copilotBlocks(full) {
       }
       if (!buckets.length) body = `<div class="empty">no quota data</div>`;
     }
-    if (q.is_cli && liveCp.length) {
+    // Local Copilot accounting does not depend on gh. When there is only the
+    // unauthenticated placeholder row, attach live usage to that row too.
+    if (liveCp.length && (q.is_cli || state.quota.length === 1)) {
       body += `<div class="q-note ell">live: <b>${fmtNum(livePremium, 2)}</b> premium req in ${liveCp.length} session${liveCp.length > 1 ? "s" : ""}</div>`;
     }
     const tag = q.is_cli ? `<span class="tag" title="Account used by the Copilot CLI / app">CLI</span>` : "";
@@ -373,9 +375,30 @@ function rateRows(rl) {
   return rows;
 }
 
+function localSessionNote(provider) {
+  const sessions = liveSessions().filter((s) => s.agent_cli === provider);
+  if (!sessions.length) return "";
+  const tokens = sessions.reduce((sum, session) => sum + Number(session.total_tokens || 0), 0);
+  const turns = sessions.reduce((sum, session) => sum + Number(session.turn_count || 0), 0);
+  const surface = sessions.some((s) => s.launch_surface === "App") ? " · app" :
+    sessions.some((s) => s.launch_surface === "Ide") ? " · ide" : "";
+  return `<div class="q-note ell" title="Locally observed usage; no provider login is required">local${surface}: <b>${fmtTok(tokens)}</b> tokens · ${fmtNum(turns)} turns · ${sessions.length} session${sessions.length > 1 ? "s" : ""}</div>`;
+}
+
+function currentRateLimits() {
+  const latest = new Map();
+  for (const rl of state.snap?.rate_limits || []) {
+    const source = String(rl.source || "").toLowerCase();
+    if (!source) continue;
+    const previous = latest.get(source);
+    if (!previous || Number(rl.updated_at || 0) >= Number(previous.updated_at || 0)) latest.set(source, rl);
+  }
+  return latest;
+}
+
 function claudeBlock(full) {
   if (isHidden("claude")) return "";
-  const fromFile = (state.snap?.rate_limits || []).find((r) => String(r.source).toLowerCase() === "claude");
+  const fromFile = currentRateLimits().get("claude");
   const cu = state.claude;
   const limits = fromFile || cu?.limits;
   const rows = limits ? rateRows(limits) : [];
@@ -410,11 +433,22 @@ function renderQuota() {
   const full = state.mode === "full";
   const parts = [...copilotBlocks(full)];
   parts.push(claudeBlock(full));
-  for (const rl of state.snap?.rate_limits || []) {
-    const src = String(rl.source || "").toLowerCase();
+  const rendered = new Set(["copilot", "claude"]);
+  for (const [src, rl] of currentRateLimits()) {
     if (src === "claude" || isHidden(src)) continue;
     const rows = rateRows(rl);
-    if (rows.length) parts.push(`<div class="q-group ${pv(src)}"><div class="q-head"><span class="src">${esc(src.toUpperCase())}</span></div>${rows.join("")}</div>`);
+    const local = localSessionNote(src);
+    if (rows.length || local) {
+      rendered.add(src);
+      parts.push(`<div class="q-group ${pv(src)}"><div class="q-head"><span class="src">${esc(src.toUpperCase())}</span></div>${rows.join("")}${local}</div>`);
+    }
+  }
+  // Every provider gets a local-only fallback. Remote authentication enriches
+  // these rows with official limits but never controls whether usage is shown.
+  for (const provider of new Set(liveSessions().map((session) => session.agent_cli))) {
+    if (rendered.has(provider) || isHidden(provider)) continue;
+    const local = localSessionNote(provider);
+    if (local) parts.push(`<div class="q-group ${pv(provider)}"><div class="q-head"><span class="src">${esc(provName(provider).toUpperCase())}</span><span class="meta">local usage</span></div>${local}</div>`);
   }
   const html = parts.filter(Boolean).join("");
   $("quota").innerHTML = html || `<div class="empty">no quota sources</div>`;

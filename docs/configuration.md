@@ -35,7 +35,7 @@ immediately and are saved to `settings.json` in the Scrooge configuration direct
 
 | Setting | Description |
 | --- | --- |
-| Enabled providers | Switch each provider (Claude Code, Codex, OpenCode, GitHub Copilot, Gemini CLI, Grok Build) on or off. A disabled provider is **not scanned at all**: its files are not read and no quota requests are made for it. Each row shows running sessions and disk usage. |
+| Enabled providers | Switch each provider (Claude Code, Codex, OpenCode, GitHub Copilot, Gemini / Antigravity, Grok Build) on or off. A disabled provider is **not scanned at all**: its files are not read and no quota requests are made for it. Each row shows running sessions and disk usage. |
 | Disk usage → Measure now | Re-measure the storage folders immediately (otherwise every 15 minutes). |
 
 ## Sessions
