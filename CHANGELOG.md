@@ -6,14 +6,53 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-18
+
 ### Fixed
 
+- `abtop --update` from the copy bundled with Scrooge no longer downloads and runs the
+  upstream abtop installer, which replaced it with a different program; it now explains
+  that the bundled copy is updated together with Scrooge.
+- `SHA256SUMS.txt` lists both macOS updater bundles under their published names
+  (`Scrooge_<version>_<arch>.app.tar.gz`) instead of one ambiguous `Scrooge.app.tar.gz`.
+- The Snap manifest no longer declares an `abtop` command that the `.deb` does not contain.
+- Release notes and the installation guide use the real Linux asset names
+  (`Scrooge_<version>_amd64.deb`, `Scrooge-<version>-1.x86_64.rpm`,
+  `Scrooge_<version>_amd64.AppImage`).
+- The reference manifests in `packaging/` point at the published 0.1.1 assets with real
+  checksums instead of placeholders.
+- Clippy no longer fails on Linux because of an import only used on macOS.
+
+### Changed
+
+- The Release workflow runs the full CI checks before building installers and refuses manual
+  runs from branches other than `main`.
+
+## [0.1.1] - 2026-11-09
+
+### Added
+
+- Usage by model under each provider in `quota & usage`, for a selectable period.
+- Button above the session list to jump to completed sessions and back.
+- Tokens per model call in a session's details for Claude Code, Codex and Copilot, with the
+  input, output and cache split and the tools each call requested.
+
+### Changed
+
+- Completed sessions now stay at the bottom of the list with a green check.
+
+### Fixed
+
+- Live Claude Code token and turn totals no longer count a response once per transcript
+  line; they had been inflated, by about three times in one measured session.
 - Count Gemini usage from live Antigravity desktop and IDE transcripts, without requiring
   a provider CLI login.
 - Keep cached Codex allowance visible after Codex exits and show a local usage fallback for
   every running provider when an official quota is unavailable.
 - Show Copilot session consumption even when GitHub CLI is not installed, and avoid
   double-counting Antigravity history when default and configured Gemini homes coincide.
+- The compact header no longer clips or breaks its text: name and buttons sit on the first
+  row, session counts and token totals on the second.
 
 ## [0.1.0]
 
@@ -40,5 +79,7 @@ All notable changes to this project are documented here. The format follows
 - Complete user manual (`docs/manual.md`) and updated high-resolution UI documentation screenshots.
 - Signed in-app updates from GitHub Releases.
 
-[Unreleased]: https://github.com/DraconDeSo/scrooge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DraconDeSo/scrooge/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/DraconDeSo/scrooge/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/DraconDeSo/scrooge/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/DraconDeSo/scrooge/releases/tag/v0.1.0

@@ -62,6 +62,10 @@ jobs:
             exit 1
           fi
           tag="v$version"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run the Release workflow from main (got $GITHUB_REF). Merge the release branch first so main, the changelog and the install scripts match the published release."
+            exit 1
+          fi
           if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
             echo "::error::The git tag ($GITHUB_REF_NAME) must match package.json ($tag)."
             exit 1
@@ -106,9 +110,15 @@ jobs:
             echo "sign_macos=$sign_macos"
           } >> "$GITHUB_OUTPUT"
 
+  checks:
+    name: CI checks
+    needs: preflight
+    if: needs.preflight.outputs.should_release == 'true'
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build (${{ matrix.name }})
-    needs: preflight
+    needs: [preflight, checks]
     if: needs.preflight.outputs.should_release == 'true'
     permissions:
       contents: write
@@ -224,9 +234,9 @@ jobs:
             | Windows 10/11 (x64) | `Scrooge_*_x64-setup.exe` (recommended) or `.msi` | `Scrooge_*_x64-portable.zip` |
             | macOS Apple silicon | `Scrooge_*_aarch64.dmg` | `Scrooge_*_aarch64-portable.tar.gz` |
             | macOS Intel | `Scrooge_*_x64.dmg` | `Scrooge_*_x64-portable.tar.gz` |
-            | Linux (Debian/Ubuntu) | `scrooge_*_amd64.deb` | `scrooge_*_amd64-portable.tar.gz` |
-            | Linux (Fedora/openSUSE) | `scrooge-*.x86_64.rpm` | `scrooge_*_amd64-portable.tar.gz` |
-            | Linux (any) | `scrooge_*_amd64.AppImage` | `scrooge_*_amd64-portable.tar.gz` |
+            | Linux (Debian/Ubuntu) | `Scrooge_*_amd64.deb` | `scrooge_*_amd64-portable.tar.gz` |
+            | Linux (Fedora/openSUSE) | `Scrooge-*.x86_64.rpm` | `scrooge_*_amd64-portable.tar.gz` |
+            | Linux (any) | `Scrooge_*_amd64.AppImage` | `scrooge_*_amd64-portable.tar.gz` |
 
             Checksums for all files are in `SHA256SUMS.txt`. Installed copies update themselves automatically from this release.
           releaseDraft: true

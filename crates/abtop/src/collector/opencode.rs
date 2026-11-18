@@ -233,6 +233,7 @@ impl OpenCodeCollector {
                 pending_since_ms: 0,
                 thinking_since_ms: 0,
                 file_accesses: vec![],
+                token_calls: Vec::new(),
                 copilot: None,
                 config_root: super::abbrev_path(
                     self.db_path.parent().unwrap_or(std::path::Path::new(".")),

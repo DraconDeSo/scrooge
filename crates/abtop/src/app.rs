@@ -549,6 +549,10 @@ impl App {
         promote_waiting_to_rate_limited(&mut self.sessions, &self.rate_limits);
     }
 
+    pub(crate) fn completed_sessions(&self) -> &[AgentSession] {
+        &self.collector.completed_sessions
+    }
+
     /// Drain completed summary results and spawn retries. Does NOT recollect
     /// sessions, so it is safe for `--once` mode (stable snapshot).
     pub fn drain_and_retry_summaries(&mut self) {
@@ -1054,6 +1058,7 @@ mod tests {
             pending_since_ms: 0,
             thinking_since_ms: 0,
             file_accesses: vec![],
+            token_calls: Vec::new(),
             copilot: None,
             config_root: String::new(),
             git_added: 0,

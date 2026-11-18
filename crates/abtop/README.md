@@ -14,8 +14,8 @@ cargo run -p abtop -- --json  # one JSON snapshot
 `--json` prints one machine-readable snapshot (the same structure Scrooge receives
 in-process through `App::to_snapshot`). The JSON snapshot includes, per session: provider,
 PID, working directory, status, model, token counters, context usage, git state, child
-processes, a `summary` (the session title or a sanitised first prompt), recent tool calls
-and `chat_messages` — a short, secret-redacted tail of user/assistant text. Tool inputs and
+processes, a `summary` (the session title or a sanitised first prompt), recent tool calls,
+`token_calls` (tokens per recent model call, with short tool previews) and `chat_messages` — a short, secret-redacted tail of user/assistant text. Tool inputs and
 file contents are never included. Treat the output as sensitive if you store or share it.
 
 ## Changes from upstream

@@ -35,9 +35,9 @@ Installers, portable archives and package-manager manifests for every supported 
 | Windows (managed) | `Scrooge_<version>_x64_en-US.msi` | `Scrooge_<version>_x64-portable.zip` | For deployment tools (Intune, GPO, SCCM). |
 | macOS 11+ Apple silicon | `Scrooge_<version>_aarch64.dmg` | `Scrooge_<version>_aarch64-portable.tar.gz` | M1 and later. |
 | macOS 11+ Intel | `Scrooge_<version>_x64.dmg` | `Scrooge_<version>_x64-portable.tar.gz` | |
-| Debian / Ubuntu | `scrooge_<version>_amd64.deb` | `scrooge_<version>_amd64-portable.tar.gz` | `sudo apt install ./scrooge_<version>_amd64.deb` |
-| Fedora / openSUSE | `scrooge-<version>-1.x86_64.rpm` | `scrooge_<version>_amd64-portable.tar.gz` | `sudo dnf install ./scrooge-<version>-1.x86_64.rpm` |
-| Any Linux | `scrooge_<version>_amd64.AppImage` | `scrooge_<version>_amd64-portable.tar.gz` | `chmod +x` and run. Supports in-app updates. |
+| Debian / Ubuntu | `Scrooge_<version>_amd64.deb` | `scrooge_<version>_amd64-portable.tar.gz` | `sudo apt install ./Scrooge_<version>_amd64.deb` |
+| Fedora / openSUSE | `Scrooge-<version>-1.x86_64.rpm` | `scrooge_<version>_amd64-portable.tar.gz` | `sudo dnf install ./Scrooge-<version>-1.x86_64.rpm` |
+| Any Linux | `Scrooge_<version>_amd64.AppImage` | `scrooge_<version>_amd64-portable.tar.gz` | `chmod +x` and run. Supports in-app updates. |
 
 ## Windows
 

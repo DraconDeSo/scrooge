@@ -25,8 +25,8 @@
 
 use super::{process, redact_secrets, sanitize_terminal_text, AgentCollector, SharedProcessData};
 use crate::model::{
-    AgentSession, ChatMessage, ChatRole, ChildProcess, CopilotUsage, LaunchSurface, SessionStatus,
-    ToolCall, MAX_CHAT_MESSAGES,
+    push_token_call, AgentSession, ChatMessage, ChatRole, ChildProcess, CopilotUsage,
+    LaunchSurface, SessionStatus, TokenCall, ToolCall, MAX_CHAT_MESSAGES,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -80,6 +80,7 @@ struct ParsedSession {
     /// toolCallId -> (name, arg, start ms)
     tools_in_flight: HashMap<String, (String, String, u64)>,
     tool_calls: Vec<ToolCall>,
+    token_calls: Vec<TokenCall>,
     initial_prompt: String,
     first_assistant_text: String,
     chat: Vec<ChatMessage>,
@@ -359,6 +360,7 @@ impl CopilotCollector {
             pending_since_ms,
             thinking_since_ms: p.thinking_since_ms,
             file_accesses: vec![],
+            token_calls: p.token_calls.clone(),
             copilot: Some(CopilotUsage {
                 premium_requests: p.premium_requests,
                 nano_aiu: p.nano_aiu,
@@ -627,15 +629,31 @@ fn apply_line(st: &mut ParsedSession, line: &str) {
             let cache_write = u(&usage["cacheWriteTokens"]);
             let output = u(&usage["outputTokens"]);
             let fresh_input = input_total.saturating_sub(cache_read + cache_write);
+            let reasoning = u(&usage["reasoningTokens"]);
             st.input_tokens += fresh_input;
             st.output_tokens += output;
             st.cache_read += cache_read;
             st.cache_write += cache_write;
-            st.reasoning_tokens += u(&usage["reasoningTokens"]);
+            st.reasoning_tokens += reasoning;
             st.usage_records += 1;
             if let Some(m) = usage["model"].as_str() {
                 st.model = m.to_string();
             }
+            let model = st.model.clone();
+            push_token_call(
+                &mut st.token_calls,
+                TokenCall {
+                    id: None,
+                    at_ms: ts,
+                    model,
+                    input: fresh_input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    reasoning,
+                    tools: Vec::new(),
+                },
+            );
             let max_prompt = u(&usage["maxPromptTokens"]);
             if max_prompt > 0 {
                 st.max_prompt_tokens = max_prompt;
@@ -687,6 +705,10 @@ fn apply_line(st: &mut ParsedSession, line: &str) {
             let id = s(&d["toolCallId"]);
             let name = s(&d["toolName"]);
             let arg = tool_arg(&d["arguments"]);
+            // Tools start after the usage record of the response requesting them.
+            if let Some(call) = st.token_calls.last_mut() {
+                call.add_tool(&name, &arg);
+            }
             st.tools_in_flight.insert(id, (name, arg, ts));
         }
         "tool.execution_complete" => {
@@ -852,6 +874,24 @@ mod tests {
         ]
         .join("\n")
             + "\n"
+    }
+
+    #[test]
+    fn token_calls_keep_usage_and_the_tools_started_after_it() {
+        let mut st = ParsedSession::default();
+        for line in sample_events().lines() {
+            apply_line(&mut st, line);
+        }
+        assert_eq!(st.token_calls.len(), 1);
+        let call = &st.token_calls[0];
+        assert_eq!(call.input, 100);
+        assert_eq!(call.output, 50);
+        assert_eq!(call.cache_read, 800);
+        assert_eq!(call.cache_write, 100);
+        assert_eq!(call.reasoning, 10);
+        assert_eq!(call.model, "claude-haiku-5.5");
+        assert_eq!(call.tools.len(), 1);
+        assert!(call.tools[0].starts_with("powershell"));
     }
 
     #[test]

@@ -1,30 +1,61 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 const root = process.argv[2];
 const outDir = process.argv[3] || root;
 if (!root) {
-  throw new Error("Usage: node scripts/generate-packaging.mjs <bundles-dir> [output-dir]");
+  throw new Error("Usage: node scripts/generate-packaging.mjs <bundles-dir|SHA256SUMS.txt> [output-dir]");
 }
 
 const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-const version = pkg.version;
+const version = process.env.SCROOGE_VERSION || pkg.version;
 const repo = process.env.GITHUB_REPOSITORY || "DraconDeSo/scrooge";
 
-const allFiles = (await readdir(root, { recursive: true, withFileTypes: true }))
-  .filter((entry) => entry.isFile())
-  .map((entry) => join(entry.parentPath, entry.name));
+// `root` is either the directory of downloaded bundles (CI) or the
+// SHA256SUMS.txt of a published release, to refresh the copies in packaging/.
+const fromSums = (await stat(root)).isFile();
+const allFiles = fromSums
+  ? []
+  : (await readdir(root, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name));
 
 const releaseExts = [".exe", ".msi", ".dmg", ".app.tar.gz", ".deb", ".rpm", ".AppImage", ".zip", ".tar.gz", ".sig"];
 const hashes = new Map();
 
-for (const filePath of allFiles) {
+// tauri-action uploads the macOS updater bundles as
+// `<productName>_<version>_<arch>.app.tar.gz`, while the build output is just
+// `Scrooge.app.tar.gz` for both architectures. Use the published name so the
+// checksums match the release assets and the two bundles do not collide.
+const macArchFor = (filePath) => {
+  if (filePath.includes("aarch64-apple-darwin")) return "aarch64";
+  if (filePath.includes("x86_64-apple-darwin")) return "x64";
+  return null;
+};
+const releaseName = (filePath) => {
   const name = basename(filePath);
+  const arch = macArchFor(filePath);
+  const match = arch && name.match(/^(.+)\.app\.tar\.gz(\.sig)?$/);
+  return match ? `${match[1]}_${version}_${arch}.app.tar.gz${match[2] || ""}` : name;
+};
+
+for (const filePath of allFiles) {
+  const name = releaseName(filePath);
   if (!releaseExts.some((ext) => name.endsWith(ext))) continue;
+  if (hashes.has(name)) {
+    throw new Error(`Two release artifacts would be published as ${name}`);
+  }
   const buf = await readFile(filePath);
   const sha256 = createHash("sha256").update(buf).digest("hex");
   hashes.set(name, sha256);
+}
+
+if (fromSums) {
+  for (const line of (await readFile(root, "utf8")).split(/\r?\n/)) {
+    const match = line.match(/^([0-9a-f]{64})\s+\*?(.+)$/i);
+    if (match) hashes.set(match[2].trim(), match[1].toLowerCase());
+  }
 }
 
 if (hashes.size === 0) {
@@ -218,8 +249,6 @@ apps:
   scrooge:
     command: usr/bin/scrooge
     desktop: usr/share/applications/Scrooge.desktop
-  abtop:
-    command: usr/bin/abtop
 
 parts:
   scrooge:

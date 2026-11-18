@@ -21,6 +21,6 @@ modules:
     sources:
       - type: file
         only-arches: [x86_64]
-        url: https://github.com/DraconDeSo/scrooge/releases/download/v0.1.0/scrooge_0.1.0_amd64.deb
-        sha256: 0000000000000000000000000000000000000000000000000000000000000000
+        url: https://github.com/DraconDeSo/scrooge/releases/download/v0.1.1/Scrooge_0.1.1_amd64.deb
+        sha256: 955b16e821c79d5c6206f93ae02e151ec6afc3928adcfcfba053bbb22c0a9b51
         dest-filename: scrooge.deb

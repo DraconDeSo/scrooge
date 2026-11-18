@@ -12,7 +12,6 @@
     <div class="brand">
       <span class="pulse" id="pulse"></span>
       <span class="name">scrooge</span>
-      <span class="counts" id="counts"></span>
     </div>
     <div class="actions">
       <button id="btn-settings" title="Settings (S)">⚙</button>
@@ -22,7 +21,10 @@
       <button id="btn-hide" title="Hide to tray (Esc)">✕</button>
     </div>
     <div class="legend" id="legend"></div>
-    <div class="vitals" id="vitals"></div>
+    <div class="title-stats">
+      <span class="counts" id="counts"></span>
+      <div class="vitals" id="vitals"></div>
+    </div>
   </header>
 
   <div id="update-banner" class="update-banner hidden">
@@ -38,33 +40,39 @@
         <button type="button" data-view="providers">Providers</button>
         <button type="button" data-view="live" class="on" aria-pressed="true">Live sessions</button>
       </div>
-      <div class="usage-range" id="usage-range">
-        <label>Period
-          <select id="usage-period">
-            <option value="today">Today</option>
-            <option value="7" selected>Last 7 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="custom">Custom dates</option>
-          </select>
-        </label>
-        <div id="usage-dates" class="usage-dates hidden">
-          <label>From <input id="usage-from" type="date" /></label>
-          <label>Through <input id="usage-through" type="date" /></label>
-        </div>
-      </div>
       <button type="button" class="btn exp-open-btn" id="btn-export" title="Export tokens, provider statistics, daily history or live snapshot">⤓ Export</button>
     </nav>
-    <section class="panel p-usage" aria-label="Usage and billing">
+    <section class="panel p-usage" aria-labelledby="usage-heading">
       <div class="usage-head">
-        <h2 id="usage-heading">Usage by project</h2>
+        <div>
+          <h2 id="usage-heading">Usage by project</h2>
+          <p id="usage-description"></p>
+        </div>
+        <div class="usage-range" id="usage-range">
+          <label>Period
+            <select id="usage-period">
+              <option value="today">Today</option>
+              <option value="7" selected>Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="custom">Custom dates</option>
+            </select>
+          </label>
+          <div id="usage-dates" class="usage-dates hidden">
+            <label>From <input id="usage-from" type="date" /></label>
+            <label>Through <input id="usage-through" type="date" /></label>
+          </div>
+        </div>
         <span id="usage-status" role="status"></span>
       </div>
-      <div id="usage-rows"></div>
-      <details class="usage-coverage">
-        <summary>Data sources</summary>
-        <div id="usage-sources"></div>
-        <button type="button" class="btn" id="usage-imports-folder">Open usage imports folder</button>
-      </details>
+      <div class="usage-scroll scroll-y">
+        <div class="usage-overview" id="usage-overview"></div>
+        <div id="usage-rows"></div>
+        <details class="usage-coverage hidden" id="usage-coverage">
+          <summary>Data sources</summary>
+          <div id="usage-sources"></div>
+          <button type="button" class="btn" id="usage-imports-folder">Open usage imports folder</button>
+        </details>
+      </div>
     </section>
     <section class="panel p-context">
       <h2>context</h2>
@@ -80,39 +88,46 @@
           <canvas id="rate-canvas"></canvas>
           <div class="rate-legend" id="rate-legend"></div>
         </div>
-        <div class="ctx-bars" id="ctx-bars"></div>
+        <div class="ctx-bars" id="ctx-bars"><div class="loader"><span class="spin"></span><span>Loading context windows…</span></div></div>
       </div>
     </section>
 
     <section class="panel p-quota">
-      <h2>quota &amp; usage</h2>
-      <div id="quota" class="scroll-y"></div>
+      <div class="quota-head" id="quota-head">
+        <h2>quota &amp; usage</h2>
+      </div>
+      <div id="quota" class="scroll-y"><div class="loader"><span class="spin"></span><span>Loading quotas…</span></div></div>
     </section>
 
     <section class="panel p-tokens">
       <h2>tokens</h2>
-      <div id="tokens" class="scroll-y"></div>
+      <div id="tokens" class="scroll-y"><div class="loader"><span class="spin"></span><span>Loading token totals…</span></div></div>
     </section>
 
     <section class="panel p-projects">
       <h2>projects</h2>
-      <div id="projects" class="scroll-y"></div>
+      <div id="projects" class="scroll-y"><div class="loader"><span class="spin"></span><span>Loading active projects…</span></div></div>
     </section>
 
     <section class="panel p-storage">
       <h2>storage <button class="mini-btn" id="storage-refresh" title="Measure again">⟳</button></h2>
-      <div id="storage" class="scroll-y"></div>
+      <div id="storage" class="scroll-y"><div class="loader"><span class="spin"></span><span>Measuring provider storage &amp; worktrees…</span></div></div>
     </section>
 
     <section class="panel p-ports">
       <h2>ports</h2>
-      <div id="ports" class="scroll-y"></div>
+      <div id="ports" class="scroll-y"><div class="loader"><span class="spin"></span><span>Scanning listening ports…</span></div></div>
     </section>
 
-    <section class="panel p-sessions">
-      <h2>sessions <span class="filter-wrap"><input id="filter" placeholder="/ filter" spellcheck="false" /></span></h2>
+    <section class="panel p-sessions" id="p-sessions" aria-labelledby="sessions-heading">
+      <div class="sessions-head">
+        <h2 id="sessions-heading">sessions</h2>
+        <input id="filter" aria-label="Filter sessions" placeholder="/ filter" spellcheck="false" />
+        <button type="button" class="btn jump-completed hidden" id="jump-completed"></button>
+        <button type="button" class="btn clear-sessions" id="clear-sessions" title="Clear live tracking for all sessions. Working sessions return on the next scan." disabled>Clear all</button>
+      </div>
       <div class="sessions-wrap">
-        <div id="sessions" class="sessions"></div>
+        <div id="sessions" class="sessions"><div class="loader"><span class="spin"></span><span>Scanning running agent sessions…</span></div></div>
         <div id="detail" class="detail"></div>
       </div>
     </section>
@@ -235,17 +250,17 @@
           <h3>Sessions</h3>
           <div class="st-group">
             <div class="st-row">
-              <div><b>Initial session order</b><small>Existing sessions keep their positions as usage updates. New sessions appear at the end.</small></div>
+              <div><b>Order within each status group</b><small>Sessions waiting for input come first, then other states and stopped sessions. Completed sessions stay at the bottom.</small></div>
               <select id="s-sort">
                 <option value="recent">Most recent</option>
-                <option value="activity">Activity (working first)</option>
+                <option value="activity">Activity</option>
                 <option value="provider">Provider</option>
                 <option value="context">Context usage</option>
                 <option value="tokens">Tokens</option>
               </select>
             </div>
             <div class="st-row">
-              <div><b>Show idle sessions</b><small>Sessions waiting for input or in unknown state.</small></div>
+              <div><b>Show idle sessions</b><small>Sessions waiting for input, stopped sessions and sessions with unconfirmed activity.</small></div>
               <label class="sw"><input type="checkbox" id="s-idle" /><i></i></label>
             </div>
             <div class="st-row">

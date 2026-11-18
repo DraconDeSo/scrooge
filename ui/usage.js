@@ -6,6 +6,8 @@ const usageState = {
   fetchedAt: 0,
   pending: false,
   queued: false,
+  error: "",
+  openEntries: new Set(),
 };
 
 const exportState = {
@@ -132,21 +134,27 @@ function applyUsageView() {
     button.classList.toggle("on", active);
     button.setAttribute("aria-pressed", String(active));
   }
-  if (view === "live") return;
+  // One period control shared by every view: it sits in whichever panel is visible.
+  const range = $("usage-range");
+  if (view === "live") $("quota-head").append(range);
+  else $("usage-status").before(range);
   renderUsage();
   if (!usageState.report || Date.now() - usageState.fetchedAt >= 60_000) loadUsage();
 }
 
 async function loadUsage() {
-  if (usageView() === "live") return;
   if (usageState.pending) { usageState.queued = true; return; }
   const range = usageRange();
   if (!range) {
-    $("usage-status").textContent = "Choose a valid date range.";
+    usageState.error = "Choose a valid date range to view usage.";
+    $("usage-status").textContent = "";
+    renderUsage();
     return;
   }
+  usageState.error = "";
   usageState.pending = true;
-  $("usage-status").textContent = "Reading usage…";
+  $("usage-status").innerHTML = usageState.report ? `<span class="spin"></span> Refreshing usage…` : "";
+  if (!usageState.report) renderUsage();
   try {
     const report = await invoke("get_usage_report", range);
     const current = usageRange();
@@ -156,7 +164,9 @@ async function loadUsage() {
     renderUsage();
     $("usage-status").textContent = "";
   } catch (err) {
-    $("usage-status").textContent = String(err || "Usage data could not be read.");
+    usageState.error = String(err || "Usage data could not be read.");
+    $("usage-status").textContent = usageState.report ? usageState.error : "";
+    renderUsage();
   } finally {
     usageState.pending = false;
     if (usageState.queued) {
@@ -193,22 +203,113 @@ function formatChargesText(charges) {
   }).join("; ");
 }
 
-function usageMetrics(rows, details) {
+const TOKEN_LABELS = { input: "Input", output: "Output", cache_read: "Cache read", cache_write: "Cache write" };
+
+function usageTokenCount(tokens) {
+  return TOKEN_FIELDS.reduce((sum, key) => sum + tokens[key], 0);
+}
+
+function usageChargeHtml(charge) {
+  const amount = new Intl.NumberFormat(undefined, {
+    style: "currency", currency: charge.currency, currencyDisplay: "code", maximumFractionDigits: 6,
+  }).format(charge.amount_micros / 1e6);
+  return `<span>${charge.kind === "api" ? "API" : "Plan extra"} <b>${esc(amount)}</b></span>`;
+}
+
+function usageOverview(rows) {
   const { tokens, requests, activities, charges } = usageTotals(rows);
-  const total = TOKEN_FIELDS.reduce((sum, key) => sum + tokens[key], 0);
-  const tokenDetail = `Input ${fmtNum(tokens.input)} · output ${fmtNum(tokens.output)} · cache read ${fmtNum(tokens.cache_read)} · cache write ${fmtNum(tokens.cache_write)}`;
-  const money = charges.map((charge) => {
-    const amount = new Intl.NumberFormat(undefined, {
-      style: "currency", currency: charge.currency, currencyDisplay: "code", maximumFractionDigits: 6,
-    }).format(charge.amount_micros / 1e6);
-    return `<span title="Reported billing amount">${charge.kind === "api" ? "API" : "Plan extra"} <b>${esc(amount)}</b></span>`;
-  }).join("");
+  const total = usageTokenCount(tokens);
+  const mix = TOKEN_FIELDS.map((key) => `<i class="mix-${key}" style="width:${total ? tokens[key] / total * 100 : 0}%"></i>`).join("");
+  const legend = TOKEN_FIELDS.map((key) => `<span class="mix-${key}" title="${fmtNum(tokens[key])}">${TOKEN_LABELS[key]} <b>${fmtTok(tokens[key])}</b></span>`).join("");
+  return `<div class="usage-stat usage-token-stat">
+    <h3>Recorded tokens</h3>
+    ${requests ? `<strong title="${fmtNum(total)} tokens">${fmtTok(total)}</strong>
+      <div class="usage-mix" aria-hidden="true">${mix}</div><div class="usage-mix-key">${legend}</div>` : '<span class="usage-muted">No token records in this period.</span>'}
+  </div>
+  <div class="usage-stat">
+    <h3>Recorded activity</h3>
+    <strong>${fmtNum(requests)}</strong><span class="usage-muted">requests with usage</span>
+    ${activities ? `<div class="usage-muted"><b>${fmtNum(activities)}</b> Gemini App activities</div>` : ""}
+  </div>
+  <div class="usage-stat">
+    <h3>Reported charges</h3>
+    <div class="usage-charge-list">${charges.map(usageChargeHtml).join("") || '<span class="usage-muted">No billing records in this period.</span>'}</div>
+  </div>`;
+}
+
+function usageMetrics(rows, details = false) {
+  const { tokens, requests, activities, charges } = usageTotals(rows);
+  const total = usageTokenCount(tokens);
+  const split = TOKEN_FIELDS.map((key) => `${TOKEN_LABELS[key]} ${fmtNum(tokens[key])}`).join(" · ");
   return `<span class="usage-metrics">
-    ${requests ? `<span title="${esc(tokenDetail)}"><b>${fmtTok(total)}</b> tokens</span>` : '<span>Tokens unavailable</span>'}
-    ${activities ? `<span><b>${fmtNum(activities)}</b> Gemini App activities</span>` : ""}
-    ${details && requests ? `<small>↓${fmtTok(tokens.input)} ↑${fmtTok(tokens.output)} ⟳${fmtTok(tokens.cache_read + tokens.cache_write)}</small>` : ""}
-    ${money || '<span>Billing unavailable</span>'}
+    ${requests ? `<span title="${split}"><b>${fmtTok(total)}</b> tokens</span>` : ""}
+    ${activities ? `<span><b>${fmtNum(activities)}</b> app activities</span>` : ""}
+    ${details && requests ? `<span title="${split}">↓${fmtTok(tokens.input)} ↑${fmtTok(tokens.output)} ⟳${fmtTok(tokens.cache_read + tokens.cache_write)}</span>` : ""}
+    ${charges.map(usageChargeHtml).join("")}
   </span>`;
+}
+
+function usageModelLabel({ model, source }) {
+  return model || (source === "gemini-app" ? "Gemini App activity" : source.endsWith("billing") ? "Unassigned model" : "Unknown model");
+}
+
+function usagePeriodLabel() {
+  const period = $("usage-period");
+  return period.value === "custom"
+    ? `${$("usage-from").value} → ${$("usage-through").value}`
+    : period.selectedOptions[0].textContent.toLowerCase();
+}
+
+/** Providers that have recorded usage in the selected period. */
+function usageProviders() {
+  return [...new Set((usageState.report?.rows || []).map((r) => r.provider))].filter((p) => p && !isHidden(p));
+}
+
+/** Local Copilot records carry no account: they belong to the CLI account, like live sessions. */
+function usageRowsFor(provider, login) {
+  const rows = (usageState.report?.rows || []).filter((r) => r.provider === provider);
+  if (!login) return rows;
+  const fallback = cliAccount() || state.quota[0]?.login;
+  const owner = (r) => state.quota.some((q) => q.login === r.account) ? r.account : fallback;
+  return rows.filter((r) => owner(r) === login);
+}
+
+/** Consumption per model for the selected period, shown under a provider's quota. */
+function modelUsageHtml(provider, login) {
+  if (!usageState.report) {
+    return usageState.error
+      ? `<div class="q-note">${esc(usageState.error)}</div>`
+      : `<div class="q-note"><span class="spin"></span> loading usage by model…</div>`;
+  }
+  const period = usagePeriodLabel();
+  const models = new Map();
+  for (const row of usageRowsFor(provider, login)) {
+    const label = usageModelLabel(row);
+    if (!models.has(label)) models.set(label, []);
+    models.get(label).push(row);
+  }
+  if (!models.size) return `<div class="q-sub">no recorded usage · ${esc(period)}</div>`;
+  const entries = [...models].map(([label, rows]) => {
+    const totals = usageTotals(rows);
+    return { label, ...totals, total: usageTokenCount(totals.tokens) };
+  }).sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+  const grand = entries.reduce((sum, e) => sum + e.total, 0);
+  const html = entries.map((e) => {
+    const share = grand ? e.total / grand * 100 : 0;
+    const charges = formatChargesText(e.charges);
+    const tip = [
+      `${e.label} · ${share.toFixed(0)}% of tokens`,
+      ...TOKEN_FIELDS.map((key) => `${TOKEN_LABELS[key]} ${fmtNum(e.tokens[key])}`),
+      charges,
+    ].filter(Boolean).join(" · ");
+    const value = [
+      e.requests ? `<b>${fmtTok(e.total)}</b> <small>${fmtNum(e.requests)} req</small>` : "",
+      e.activities ? `<b>${fmtNum(e.activities)}</b> <small>activities</small>` : "",
+      !e.requests && !e.activities ? `<small>${esc(charges)}</small>` : "",
+    ].filter(Boolean).join(" ");
+    return `<div class="q-model" title="${esc(tip)}"><span class="lbl">${esc(shortModel(e.label))}</span>${bar(share, "time")}<span class="val">${value}</span></div>`;
+  }).join("");
+  return `<div class="q-sub">by model · ${esc(period)}</div><div class="q-models">${html}</div>`;
 }
 
 function usageModelRows(rows) {
@@ -223,8 +324,8 @@ function usageModelRows(rows) {
     (a.model || "").localeCompare(b.model || "") ||
     (a.account || "").localeCompare(b.account || ""));
   return sorted.map((group) => {
-    const { provider, model, account, source } = group[0];
-    const label = model || (source === "gemini-app" ? "Gemini App activity" : source.endsWith("billing") ? "Unassigned model" : "Unknown model");
+    const { provider, account } = group[0];
+    const label = usageModelLabel(group[0]);
     const sources = [...new Set(group.map((r) => USAGE_SOURCES[r.source]))].filter(Boolean).join(" · ");
     return `<div class="usage-model" ${idStyle(provider)}>
       <div><b>${esc(label)}</b><small>${esc([usageProviderName(provider), account, sources].filter(Boolean).join(" · "))}</small></div>
@@ -235,33 +336,54 @@ function usageModelRows(rows) {
 
 function renderUsage() {
   const view = usageView();
-  if (view === "live") return;
-  $("usage-heading").textContent = view === "projects" ? "Usage by project" : "Usage by provider";
+  if (view === "live") { renderQuota(); return; }
+  const byProject = view === "projects";
+  $("usage-heading").textContent = byProject ? "Usage by project" : "Usage by provider";
+  $("usage-description").textContent = byProject
+    ? "Recorded model usage grouped by workspace."
+    : "Historical usage and current quota for each provider.";
   const box = $("usage-rows");
-  const open = new Set([...box.querySelectorAll("details[open]")].map((entry) => entry.dataset.key));
-  const rows = (usageState.report?.rows || []).filter((r) => !isHidden(r.provider));
+  $("usage-coverage").classList.toggle("hidden", !usageState.report);
+  if (!usageState.report) {
+    $("usage-overview").innerHTML = "";
+    box.innerHTML = usageState.error
+      ? `<p class="usage-empty">${esc(usageState.error)}</p>`
+      : loaderHtml("Reading local usage and billing records…");
+    return;
+  }
+  const rows = (usageState.report.rows || []).filter((r) => !isHidden(r.provider));
+  $("usage-overview").innerHTML = usageOverview(rows);
   const groups = new Map();
-  if (view === "providers") {
+  if (!byProject) {
     for (const provider of Object.keys(PROVIDERS).filter((p) => !isHidden(p))) groups.set(provider, []);
   }
   for (const row of rows) {
-    const key = view === "projects" ? row.project || "" : row.provider;
+    const key = byProject ? row.project || "" : row.provider;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   }
   box.innerHTML = [...groups].map(([key, group]) => {
-    const label = view === "providers" ? usageProviderName(key) : projectShortName(key);
+    const label = byProject ? projectShortName(key) : usageProviderName(key);
     const entryKey = view + ":" + key;
-    const quotas = view === "providers" ? `<span class="usage-quota" data-provider="${esc(key)}"></span>` : "";
-    const expAttr = view === "projects"
-      ? `data-exp-project="${esc(key)}" title="Export tokens for ${esc(label)}"`
-      : `data-exp-provider="${esc(key)}" title="Export usage for ${esc(label)}"`;
-    return `<details class="usage-entry" data-key="${esc(entryKey)}" ${open.has(entryKey) ? "open" : ""}>
-      <summary><b title="${esc(view === "projects" ? key : label)}">${esc(label)}</b><span>${usageMetrics(group, false)}<button type="button" class="mini-btn exp-row-btn" ${expAttr}>⤓</button></span>${quotas}</summary>
-      ${usageModelRows(group) || '<p class="empty">No model usage for this period.</p>'}
-    </details>`;
-  }).join("") || '<p class="empty">No recorded usage for this period.</p>';
-  $("usage-sources").innerHTML = (usageState.report?.coverage || []).map((source) => {
+    const providers = [...new Set(group.map((row) => row.provider))];
+    const meta = byProject && key ? `<small class="ell" title="${esc(key)}">${esc(homeAbbrev(key))}</small>` : "";
+    const chips = byProject ? `<span class="usage-provider-list">${providers.map((provider) =>
+      `<span ${idStyle(provider)}>${esc(usageProviderName(provider))}</span>`).join("")}</span>` : "";
+    const quota = byProject ? "" : `<div class="usage-live"><h4>Live quota</h4><div class="usage-quota" data-provider="${esc(key)}"></div></div>`;
+    const expAttr = byProject ? `data-exp-project="${esc(key)}"` : `data-exp-provider="${esc(key)}"`;
+    return `<article class="usage-entry" ${byProject ? "" : idStyle(key)}>
+      <details data-key="${esc(entryKey)}" ${usageState.openEntries.has(entryKey) ? "open" : ""}>
+        <summary>
+          <span class="usage-identity"><b>${esc(label)}</b>${meta}${chips}</span>
+          ${group.length ? usageMetrics(group) : '<span class="usage-muted">No recorded usage</span>'}
+        </summary>
+        <div class="usage-models">${usageModelRows(group) || '<p class="usage-muted">No model usage for this period.</p>'}</div>
+      </details>
+      <button type="button" class="mini-btn exp-row-btn" ${expAttr} aria-label="Export usage for ${esc(label)}" title="Export usage for ${esc(label)}">⤓</button>
+      ${quota}
+    </article>`;
+  }).join("") || '<p class="usage-empty">No recorded usage for this period.</p>';
+  $("usage-sources").innerHTML = (usageState.report.coverage || []).map((source) => {
     let status = source.supported ? "No local records" : "History unavailable";
     if (source.source === "gemini-app") status = "Import a Gemini activity export";
     if (source.source === "billing") status = "Import a provider billing report";
@@ -308,9 +430,11 @@ function usageQuotaLabels(provider) {
 }
 
 function updateUsageQuotas() {
+  if (usageView() !== "providers") return;
   for (const node of $("usage-rows").querySelectorAll(".usage-quota")) {
     const labels = usageQuotaLabels(node.dataset.provider);
-    node.innerHTML = (labels.length ? labels : ["Live quota unavailable"]).map((label) => `<span>${esc(label)}</span>`).join("");
+    const html = (labels.length ? labels : ["Unavailable"]).map((label) => `<span>${esc(label)}</span>`).join("");
+    if (node.innerHTML !== html) node.innerHTML = html;
   }
 }
 
@@ -813,6 +937,7 @@ function initUsage() {
   function rangeChanged() {
     $("usage-dates").classList.toggle("hidden", $("usage-period").value !== "custom");
     usageState.report = null;
+    usageState.error = "";
     renderUsage();
     loadUsage();
   }
@@ -822,7 +947,12 @@ function initUsage() {
     $("usage-status").textContent = String(err);
   });
 
-  // Row quick-export buttons in Projects / Providers
+  $("usage-rows").addEventListener("toggle", ({ target }) => {
+    if (!target.dataset.key) return;
+    if (target.open) usageState.openEntries.add(target.dataset.key);
+    else usageState.openEntries.delete(target.dataset.key);
+  }, true);
+
   $("usage-rows").addEventListener("click", (event) => {
     const btn = event.target.closest(".exp-row-btn");
     if (!btn) return;

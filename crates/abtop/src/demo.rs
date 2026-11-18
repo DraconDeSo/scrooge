@@ -199,6 +199,7 @@ pub fn populate_demo(app: &mut App) {
             ],
             pending_since_ms: now - 6_000, // 6s ago => bar animates
             thinking_since_ms: 0,
+            token_calls: Vec::new(),
             copilot: None,
             config_root: "~/.claude".into(),
             file_accesses: vec![
@@ -309,6 +310,7 @@ pub fn populate_demo(app: &mut App) {
             tool_calls: vec![],
             pending_since_ms: 0,
             thinking_since_ms: 0,
+            token_calls: Vec::new(),
             copilot: None,
             config_root: "~/.claude-work".into(),
             file_accesses: vec![],
@@ -415,6 +417,7 @@ pub fn populate_demo(app: &mut App) {
             // animates. 1s offset keeps the bar visibly growing against the
             // session's 2.8s max tool duration before it caps at 100%.
             thinking_since_ms: now - 1_000,
+            token_calls: Vec::new(),
             copilot: None,
             config_root: "~/.claude".into(),
             file_accesses: vec![],
@@ -471,6 +474,7 @@ pub fn populate_demo(app: &mut App) {
             tool_calls: vec![],
             pending_since_ms: 0,
             thinking_since_ms: 0,
+            token_calls: Vec::new(),
             copilot: None,
             config_root: "~/.codex".into(),
             file_accesses: vec![],
@@ -515,6 +519,7 @@ pub fn populate_demo(app: &mut App) {
             tool_calls: vec![],
             pending_since_ms: 0,
             thinking_since_ms: 0,
+            token_calls: Vec::new(),
             copilot: None,
             config_root: "~/.local/share/opencode".into(),
             file_accesses: vec![],
