@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
 PackageIdentifier: DraconDeSo.Scrooge
-PackageVersion: 0.1.0
+PackageVersion: 0.1.1
 PackageLocale: en-US
 Publisher: The Scrooge contributors
 PublisherUrl: https://github.com/DraconDeSo/scrooge
@@ -23,7 +23,7 @@ Installers:
   - Architecture: x64
     InstallerType: nullsoft
     Scope: user
-    InstallerUrl: https://github.com/DraconDeSo/scrooge/releases/download/v0.1.0/Scrooge_0.1.0_x64-setup.exe
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerUrl: https://github.com/DraconDeSo/scrooge/releases/download/v0.1.1/Scrooge_0.1.1_x64-setup.exe
+    InstallerSha256: B8C6B4173B6ECDE436FDECD7A4F6F96E97F481B71AD6465BC0C5CAA6A8323BD1
 ManifestType: singleton
 ManifestVersion: 1.6.0

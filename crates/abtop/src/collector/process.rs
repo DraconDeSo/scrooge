@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::fs;
-#[cfg(not(windows))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
 use std::process::Command;
 
 #[derive(Debug)]

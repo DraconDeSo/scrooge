@@ -6,17 +6,19 @@ for Windows (x64), macOS (Apple silicon and Intel) and Linux (x64).
 When a branch is merged into `main` with a version in `package.json` + `src-tauri/Cargo.toml`
 that has not been published yet (or when triggered manually / via a `v*` tag):
 
-1. **`preflight`** checks that `package.json` and `src-tauri/Cargo.toml` have the same version
+1. **`preflight`** refuses manual runs from any branch other than `main`, checks that `package.json` and `src-tauri/Cargo.toml` have the same version
    and checks whether `v<version>` is already published on GitHub. (If `v<version>` is already
    published, normal commits on `main` skip the release build automatically.)
-2. **`build`** compiles all 4 OS targets (`Windows x64`, `macOS Apple silicon`, `macOS Intel`,
+2. **`checks`** runs the full CI workflow (rustfmt, clippy, tests on all three systems and the
+   dependency audit). Installers are only built when it passes.
+3. **`build`** compiles all 4 OS targets (`Windows x64`, `macOS Apple silicon`, `macOS Intel`,
    `Linux x64`), builds the standalone `abtop` CLI, packages portable archives (`.zip` / `.tar.gz`),
    and uploads all installers + `latest.json` to a **Draft GitHub Release** (`v<version>`).
-3. **`verify`** checks all bundle types, verifies the Minisign updater signatures against
+4. **`verify`** checks all bundle types, verifies the Minisign updater signatures against
    `tauri.conf.json`, generates `SHA256SUMS.txt` and auto-updates the package manager manifests
    (`scrooge.scoop.json`, `DraconDeSo.Scrooge.winget.yaml`, `scrooge.rb`, `PKGBUILD`), attaching
    them to the Draft Release.
-4. **`publish`** waits for approval on the `release` GitHub Environment (if configured) and
+5. **`publish`** waits for approval on the `release` GitHub Environment (if configured) and
    publishes the Draft Release live with one click.
 
 ## Setting up the 1-click Approval Gate on GitHub
@@ -73,3 +75,15 @@ and the pipeline will enable them automatically:
    `SHA256SUMS.txt` and package manifests, and prepares the Draft Release `vX.Y.Z`.
 4. Approve the `release` environment deployment in GitHub Actions (or click **Publish release**
    on the Draft Release in GitHub).
+5. Refresh the reference manifests in `packaging/` from the published checksums and commit them:
+
+   ```bash
+   curl -fsSLO https://github.com/DraconDeSo/scrooge/releases/download/vX.Y.Z/SHA256SUMS.txt
+   SCROOGE_VERSION=X.Y.Z node scripts/generate-packaging.mjs SHA256SUMS.txt packaging-out
+   ```
+
+   then copy each generated file over its counterpart in `packaging/` (and bump
+   `packaging/chocolatey/scrooge.nuspec`).
+
+Do not start the Release workflow from a feature branch: the release notes, the changelog link
+and the one-line installers all point at `main`, so `main` must contain the released version.

@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The Release workflow runs these checks before building installers.
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Include the workflow name: when called from Release, github.workflow is
+  # "Release", so a push to main does not cancel the release's own checks.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

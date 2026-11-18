@@ -95,7 +95,7 @@ pub fn run() -> io::Result<()> {
         return Ok(());
     }
 
-    // --update flag: self-update via GitHub releases installer
+    // --update flag: explain how the bundled copy is updated
     if std::env::args().any(|a| a == "--update") {
         return run_update();
     }
@@ -504,63 +504,17 @@ fn print_snapshot(app: &App) {
 }
 
 fn run_update() -> io::Result<()> {
+    // This abtop build is bundled with Scrooge and carries Scrooge-specific
+    // changes. Running the upstream installer would replace it with a
+    // different program, so updates come from Scrooge itself.
     let current = env!("CARGO_PKG_VERSION");
-    println!("abtop v{current} — checking for updates...\n");
-
-    // Download to a private temp file (O_EXCL + random suffix) so a local
-    // attacker can't pre-place a symlink or swap the file mid-run.
-    let tmp = tempfile::Builder::new()
-        .prefix("abtop-installer-")
-        .suffix(".sh")
-        .tempfile()?;
-    let installer_path = tmp.path().to_path_buf();
-
-    let dl_status = std::process::Command::new("curl")
-        .args([
-            "--proto",
-            "=https",
-            "--tlsv1.2",
-            "-LsSf",
-            "https://github.com/graykode/abtop/releases/latest/download/abtop-installer.sh",
-            "-o",
-        ])
-        .arg(&installer_path)
-        .status()?;
-
-    if !dl_status.success() {
-        eprintln!("\nDownload failed. You can also update manually:");
-        eprintln!("  cargo install abtop --force");
-        std::process::exit(1);
-    }
-
-    // Show checksum so the user can verify if desired.
-    // macOS ships `shasum` (Perl) by default, Linux ships `sha256sum` (coreutils).
-    let checksum_shown = std::process::Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(&installer_path)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !checksum_shown {
-        let _ = std::process::Command::new("sha256sum")
-            .arg(&installer_path)
-            .status();
-    }
-
-    let status = std::process::Command::new("sh")
-        .arg(&installer_path)
-        .status()?;
-
-    // NamedTempFile::drop removes the file; explicit drop to sequence it
-    // after sh exits.
-    drop(tmp);
-
-    if !status.success() {
-        eprintln!("\nUpdate failed. You can also update manually:");
-        eprintln!("  cargo install abtop --force");
-        std::process::exit(1);
-    }
-
+    println!("abtop v{current} (bundled with Scrooge)\n");
+    println!("This copy of abtop is updated together with Scrooge:");
+    println!(
+        "  - installed app: Settings -> 'Check for updates' (or wait for the automatic check)"
+    );
+    println!("  - package managers: winget / scoop / choco / brew / AUR upgrade of `scrooge`");
+    println!("  - releases: https://github.com/DraconDeSo/scrooge/releases/latest");
     Ok(())
 }
 
